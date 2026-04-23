@@ -52,6 +52,10 @@ pip install mcp-qlikview
 | Phase 2 | Data extraction via DuckDB SQL | Not started |
 | Phase 3 | Watcher, export, PyPI release | Not started |
 
+## Contributing
+
+See [`docs/DEV_SETUP.md`](docs/DEV_SETUP.md) for the Claude Code plugins, skills, and environment this project expects. The workflow is LLM-assisted (spec → plan → TDD), but the repo doesn't ship any proprietary tooling — you install the public plugins and go.
+
 ## License
 
 [MIT](LICENSE)
