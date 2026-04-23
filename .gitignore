@@ -72,6 +72,10 @@ dmypy.json
 tests/fixtures/*.qvw
 tests/fixtures/*-prj/
 
+# Claude Code local tooling (project-local skills/agents/hooks — symlinked from
+# dev environment; not for public distribution as some may contain org context)
+.claude/
+
 # Local test output
 /tmp-output/
 *.parquet
