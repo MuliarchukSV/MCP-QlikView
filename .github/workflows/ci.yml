@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "phase-*"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package + dev extras
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check src/ tests/
+
+      - name: Type-check (mypy)
+        run: mypy src/mcp_qlikview/
+        continue-on-error: true   # non-blocking in Phase 1
+
+      - name: Run tests
+        run: pytest tests/ -q --tb=short
+        env:
+          QVW_DIR: /tmp/empty_qvw_dir   # must exist; no real QVW files in CI
+
+      - name: Verify server starts
+        run: |
+          mkdir -p /tmp/empty_qvw_dir
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
+            | QVW_DIR=/tmp/empty_qvw_dir timeout 5 python -m mcp_qlikview \
+            | grep -q '"serverInfo"'
+          echo "Server start: OK"

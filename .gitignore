@@ -70,7 +70,14 @@ dmypy.json
 # Project-specific
 # Reference QVW fixtures (confidential — see spec §8.2)
 tests/fixtures/*.qvw
+!tests/fixtures/synthetic_minimal.qvw
 tests/fixtures/*-prj/
+
+# Local exploratory scripts (hardcoded prod paths)
+scripts/
+
+# Machine-local MCP server config (paths differ per dev machine)
+.mcp.json
 
 # Claude Code local tooling (project-local skills/agents/hooks — symlinked from
 # dev environment; not for public distribution as some may contain org context)
