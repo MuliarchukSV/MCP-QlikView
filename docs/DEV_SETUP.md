@@ -17,29 +17,40 @@ When you open this repository in Claude Code, it will read:
 
 ---
 
-## 2. Claude Code plugins (required)
+## 2. Claude Code plugins (optional accelerators)
 
-Install these via the plugin manager inside Claude Code (`/plugin` command, or see https://claude.com/claude-code for current UX):
+None of the plugins below are hard requirements. The workflow runs
+without them — you just do the steps by hand. They're listed here so
+new contributors know what the maintainer reaches for.
 
-| Plugin | Why we use it in this project |
-|---|---|
-| **superpowers** | Design and implementation workflow. Provides `brainstorming`, `writing-plans`, `executing-plans`, `test-driven-development`, `systematic-debugging`, `verification-before-completion`, `using-git-worktrees`. The spec (`docs/specs/2026-04-23-mcp-qlikview-design.md`) was produced via `superpowers:brainstorming`; implementation work uses `superpowers:writing-plans` → `superpowers:executing-plans`. |
-| **claude-code-guide** (or equivalent) | Answers questions about Claude Code / Agent SDK / Anthropic API. Useful when wiring up the MCP server to the `mcp` Python SDK. |
+| Plugin | Why we use it | How to install |
+|---|---|---|
+| **superpowers** | Design + implementation discipline. Provides skills `brainstorming`, `writing-plans`, `executing-plans`, `test-driven-development`, `systematic-debugging`, `verification-before-completion`, `using-git-worktrees`, `adversarial-review`. The v1 spec was produced via `brainstorming`; the v2 revision (2026-05-06) was driven by `adversarial-review`. | Open Claude Code → `/plugin` → install from the marketplace name `superpowers`. If your build doesn't include the marketplace UI, the plugin source is publicly available via Anthropic; check the Claude Code release notes for current install instructions. |
+| **claude-code-guide** | Answers questions about Claude Code / Agent SDK / Anthropic API. Useful when wiring up the MCP server to the `mcp` Python SDK. | Same as above, marketplace name `claude-code-guide`. |
+
+If a plugin is unavailable in your environment, the workflow still
+works — you just run the steps manually.
 
 ---
 
-## 3. Claude Code skills (recommended)
+## 3. Claude Code skills (optional)
 
-Skills are smaller than plugins and can live at the user level (`~/.claude/skills/`) so they're available across all your projects. For this project, these are the ones we actually reach for:
+Skills can live at the user level (`~/.claude/skills/`) and are
+available across all projects. The maintainer uses these on this repo:
 
-| Skill | What it does | Where to get it |
+| Skill | Used for | Source |
 |---|---|---|
-| **mcp-server-dev** | Guides you through building production-grade MCP servers (TypeScript or Python). Already useful for Phase 1 (server scaffolding). | Ships with the `superpowers` / `claude-plugins-official` pack, or grab it from https://github.com/anthropics/claude-code (check the plugin marketplace). |
-| **doc-review** | Adversarial spec/plan review. We've run it twice on the design spec so far; plan to run it on the implementation plan before writing code. | Either install via a plugin that ships it, or author your own stub using the same checklist pattern (it's mostly prompt engineering around a severity-labeled checklist). |
-| **ralph** | Persistence loop for critical tasks — run → verify → retry. Handy for Phase 1 parser work where we iterate against the 3 reference QVWs. | Similar: plugin marketplace or user-authored. |
-| **mcp-publish** | Phase 3 only: publishes the package to PyPI / Smithery with the right metadata. | Not needed until release. |
+| `mcp-server-dev` | Phase 1 server scaffolding (`mcp` Python SDK boilerplate, stdio transport patterns). | Bundled with `superpowers`. Fallback: read the `mcp` Python SDK README and the `mcp-server-motherduck` repo (cited in spec §12) — same pattern. |
+| `adversarial-review` | Pre-merge spec / plan critique. The v2 spec changelog (§15) was generated from one such pass. | Bundled with `superpowers`. Fallback: run a peer review with the explicit instruction "find at least 10 problems, no 'looks good'" — that is the entire skill. |
+| `doc-review` | Lighter-weight spec review (consistency, completeness, missing requirements). Run it before Phase 1 plan ships. | Bundled with `superpowers`. Fallback: ad-hoc reviewer pass against `docs/specs/`. |
+| `ralph` | Persistence loop for the §14.1.1 probe (run → verify → retry). | Bundled with `superpowers`. Fallback: a shell loop against the probe script. |
+| `mcp-publish` | Phase 3 only: PyPI release packaging with the right metadata. | Bundled with `superpowers`. Fallback: `pyproject.toml` + `twine upload` per the official PyPA tutorial. |
 
-If a skill is unavailable in your environment, the workflow still works — you just run the steps manually. The skills are accelerators, not hard dependencies.
+**Important:** none of these skills is a public, pinned-version
+package. They ship inside `superpowers` and may be renamed or
+restructured between releases. If you need a stable contract, read the
+skill source once and inline what you need — they're all just prompts
+plus checklists, not runtime code.
 
 ---
 

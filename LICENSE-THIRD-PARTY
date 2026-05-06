@@ -1,0 +1,66 @@
+Third-party software notices
+============================
+
+This project incorporates or depends on third-party open-source software.
+Each component below retains its original licence; this file collects
+required attributions in one place. The full text of each licence is
+available at the URLs cited.
+
+The list below is authoritative for v1.0.0. Components added in later
+versions update this file in the same release.
+
+
+PyQvd
+-----
+Copyright (c) Constantin Mueller and PyQvd contributors
+Licence: MIT
+Source:  https://github.com/MuellerConstantin/PyQvd
+Used as: reference implementation for QVD symbol-table and bit-index
+         decoding. `src/mcp_qlikview/parser/data.py` is adapted from
+         PyQvd's decoder; if vendored into `src/mcp_qlikview/_vendor/`,
+         the verbatim PyQvd licence is bundled there.
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit
+  persons to whom the Software is furnished to do so, subject to the
+  following conditions:
+
+  The above copyright notice and this permission notice shall be included
+  in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+  OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+  CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+  TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+Runtime dependencies (declared in pyproject.toml when Phase 1 lands)
+-------------------------------------------------------------------
+
+The following packages are runtime dependencies. Their licences are
+permissive and compatible with this project's MIT licence; full
+licence texts are bundled by `pip` into the installed wheel of each
+package.
+
+  mcp                 — MIT      (https://github.com/modelcontextprotocol/python-sdk)
+  duckdb              — MIT      (https://github.com/duckdb/duckdb)
+  pyarrow             — Apache-2.0 (https://github.com/apache/arrow)
+  pydantic            — MIT      (https://github.com/pydantic/pydantic)
+  pydantic-settings   — MIT      (https://github.com/pydantic/pydantic-settings)
+  watchdog            — Apache-2.0 (https://github.com/gorakhargosh/watchdog)
+  aiorwlock           — Apache-2.0 (https://github.com/aio-libs/aiorwlock)
+  chardet (optional)  — LGPL-2.1 (used as optional dependency only; if you
+                                   need to avoid LGPL, install with
+                                   `pip install mcp-qlikview --no-deps` and
+                                   omit chardet — the parser falls back to
+                                   cp1252 with replacement chars)
+
+If any future contribution adds a dependency under a non-permissive
+licence (GPL, AGPL), it must be added to this file with an explicit
+note in the release changelog.
