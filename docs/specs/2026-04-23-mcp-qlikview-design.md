@@ -1,10 +1,12 @@
 # MCP-QlikView — Design Spec
 
-**Date:** 2026-04-23 (v1 draft) · 2026-05-06 (v2 — adversarial review applied)
-**Status:** Draft v2 — 14 issues from adversarial review resolved; 2 items pending user action (PyPI name reservation, §14.1.1 probe).
+**Date:** 2026-04-23 (v1 draft) · 2026-05-06 (v2 — adversarial review applied) · 2026-05-07 (v3 — §14.1.1 probe applied)
+**Status:** Draft v3 — probe gate cleared (`docs/probes/2026-05-07-qvw-framing.md`); Phase 1 unblocked. Pending user action: PyPI name reservation only.
 **Target repo:** `github.com/MuliarchukSV/MCP-QlikView` (public)
 **Distribution:** PyPI package `mcp-qlikview`, `uvx`-launched
 **Owner:** Sergey Muliarchuk (personal / open source)
+
+> v3 changelog (2026-05-07): probe report confirmed QVW is a **custom container, not a QVD-with-prefix**. PyQvd is reusable for inner symbol decoding only; the container layer is from-scratch. §3.2 split into container + per-block-kind decoders; §9 risk row 1 re-estimated (5–10 days, not 0.5–1); §13 added PNG thumbnails to out-of-scope.
 
 > v2 changelog (2026-05-06): see appendix §15 for the per-issue diff. Major changes: §3.6 cursor-per-handler concurrency model, §3.5 reserved-word sanitization + deterministic ordering, §6.1 MCP-protocol-level startup errors, §14.1.1 probe gated **before** any data-parser code, ErrorEnvelope made extensible, new §4.1 tool `search`, performance budget reconciled with §9 risk row 5.
 
@@ -101,13 +103,16 @@ Each component has one job, a defined interface, and is testable in isolation.
 | `config.py` | Load settings from env (`QVW_DIR`, `MAX_ROWS`, cache limits) | `Config` pydantic model |
 | `store.py` | DuckDB connection, schema-per-QVW namespacing, lazy-load orchestration, cache invalidation | `ensure_parsed(qvw)`, `query(sql)`, `invalidate(qvw)` |
 | `watcher.py` | Filesystem watch on `QVW_DIR`, emits invalidation events to store | `start(on_change)`, `stop()` |
-| `parser/container.py` | Read QVW file: header → sequence of zlib blocks → EXEX trailer | `parse(path) → QvwContainer` (blocks + offsets) |
+| `parser/container.py` | Read QVW file: 23-byte file header (magic check) → scan for zlib streams → decompress each block → EXEX trailer check. Returns ordered list of `RawBlock(index, decompressed_bytes, kind_hint)` where kind_hint is `metadata` (~169 byte trailing pad) / `data_chunk` (256 KB fixed + 4-byte trailer) / `unknown`. | `parse(path) → QvwContainer` (blocks + offsets + magic-validated header) |
 | `parser/prj.py` | If `<name>-prj/` folder sibling of `<name>.qvw` exists, read `LoadScript.txt` and XML objects | `try_prj(qvw_path) → PrjBundle \| None` |
-| `parser/script.py` | Extract load script text: from `-prj` if present, else from block 0 | `extract_script(qvw) → str` |
-| `parser/schema.py` | Parse table definitions and field lists (blocks 1..N metadata) | `extract_schema(qvw) → list[TableSchema]` |
-| `parser/data.py` | Decode data blocks: symbol tables (flags `0x01..0x06`) + bit-stuffed index → `pyarrow.Table`. Adapted from `PyQvd`. | `extract_data(qvw, table) → pa.Table` |
-| `parser/variables.py` | Parse variable XML | `extract_variables(qvw) → dict[str, str]` |
-| `parser/sheets.py` | Parse sheet + chart XML | `extract_sheets(qvw) → list[Sheet]` |
+| `parser/blocks/script.py` | Locate `///$tab` marker inside block 0 of the container, return load-script text (with §4.3 encoding chain). Or use `-prj` fast-path. | `extract_script(container \| prj) → str` |
+| `parser/blocks/dictionary.py` | Decode block 1 (global field-name list) using the `04 LL <bytes>` tag-prefixed string-list format observed in the probe. | `extract_field_names(container) → list[str]` |
+| `parser/blocks/tables.py` | Decode block 2 (global table-name list), same tag format. | `extract_table_names(container) → list[str]` |
+| `parser/blocks/symbols.py` | **PyQvd-adapted.** Decode `0x01..0x06`-tagged dual-value entries from any block: 0x01=int, 0x02=double, 0x03=int+text, 0x04=text, 0x05=int+text-numeric, 0x06=double+text. Returns Arrow-typed columns. | `decode_symbols(bytes) → pa.Array` |
+| `parser/blocks/schema.py` | Walk container blocks 3..N to assemble per-table field definitions (which fields belong to which table, types, dual flags) by combining dictionary + table list + per-table metadata blocks. | `extract_schema(container) → list[TableSchema]` |
+| `parser/blocks/data.py` | Combine fixed-size 256 KB data chunks into per-table row sequences using the bit-stuffed index decode (PyQvd-adaptable). | `extract_data(container, table) → pa.Table` |
+| `parser/variables.py` | Decode variables block (binary format, exact layout to be characterised in Phase 1 — probe confirmed they live in container blocks, not loose XML). | `extract_variables(container) → dict[str, str]` |
+| `parser/sheets.py` | Decode sheet + chart blocks. Probe confirmed PNG thumbnails are also embedded — they are out of scope per §13. | `extract_sheets(container) → list[Sheet]` |
 | `parser/sources.py` | Regex-based extraction of `LIB CONNECT TO`, `ODBC`, `OLEDB`, file paths from script | `extract_sources(script) → list[DataSource]` |
 
 Internals of each parser module can change without consumers noticing; the return types (Pydantic models in `models.py`) are the contract.
@@ -614,7 +619,7 @@ Estimates are **targets, not commitments**. No public QVW data-body parser exist
 
 **Labor assumption** (v2 explicit): all "~N days" estimates assume **one senior dev, ~6 hours of focused work per day**. Solo evening-only cadence (~2h/day, weekday-only) translates to ~3× calendar duration: target 6 dev-days → ~3 calendar weeks at evening cadence, ~6 calendar weeks if Phase 2 hits the high end. Two-person pair would compress only Phase 1 and Phase 3 (mostly mechanical work); Phase 2 is parser-archaeology and doesn't parallelise well.
 
-### Phase 1 — Reliable metadata (target ~2 days)
+### Phase 1 — Reliable metadata (target ~6–8 days post-probe; was ~2 in v1)
 **Goal:** 8/11 tools working at 100% confidence. Usable immediately for script exploration even if data extraction is pending.
 
 Tools complete: `list_files`, `list_tables` (metadata only), `get_script`, `get_variables`, `get_sheets`, `get_data_sources`, `reload`, `search` (script + variable scopes only — field/table scopes light up in Phase 2 once data parses).
@@ -622,11 +627,12 @@ Tools complete: `list_files`, `list_tables` (metadata only), `get_script`, `get_
 Deliverables:
 - Repo scaffolded, published to PyPI as `mcp-qlikview==0.1.0`
 - MCP server runs, connects to Claude Code
-- Container parser (header/zlib/EXEX) validated on all 3 reference QVWs
+- **Container parser** (`parser/container.py`): 23-byte header magic check, zlib stream scan, per-block kind hint (metadata/data_chunk/unknown), EXEX trailer check — validated on all 3 reference QVWs
+- Block decoders for script (block 0), field-name dictionary (block 1), table list (block 2), schema (blocks 3..N)
 - `-prj` fast-path working when folders present
-- Phase 1 probe findings recorded: QVW data-block framing (§14.1.1), encrypted-detection signal (§14.1.2)
+- Phase 1 probe findings already recorded (`docs/probes/2026-05-07-qvw-framing.md`); encrypted-detection signal still TODO when an encrypted sample becomes available
 
-**Gate:** §2 success criteria 1, 2, 3, 4 verified on all 3 reference files.
+**Gate:** §2 success criteria 1, 2, 3, 4 verified on all 3 reference files. Note: estimate inflated from v1's "2 days" because probe revealed the container is custom, not QVD-derivative.
 
 ### Phase 2 — Data extraction (target ~3 days, real risk of 4-6)
 **Goal:** full `query`, `describe_table`, `export_table`, `search` working. All 11 tools live.
@@ -649,7 +655,7 @@ Deliverables:
 
 **Gate:** all §2 success criteria verified → tag `v1.0.0`.
 
-**Target total:** ~6 working days. Realistic range: 6-10 depending on Phase 2 surprises.
+**Target total (v3, post-probe):** ~10–14 dev-days (was ~6 in v1, before the container-parser scope materialised). Phases 1 and 2 both inherit the from-scratch container layer; Phase 3 stays at ~1 day. Realistic range with Phase 2 unknown-unknowns: 10–18 dev-days. At solo evening cadence (§7 labor assumption), that's 5–9 calendar weeks.
 
 ---
 
@@ -703,7 +709,7 @@ For v1.0.0 sign-off, manually:
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| QVW data blocks wrap QVD bodies with extra framing (not yet confirmed) | High | 0.5-1 day extra | Day 1: `xxd` on decompressed data blocks; compare to QVD magic. If wrapper present, document it before coding parser. |
+| ~~QVW data blocks wrap QVD bodies with extra framing~~ — **CONFIRMED 2026-05-07** (probe report). QVW is a custom container, not QVD-with-prefix. PyQvd reusable only for inner `0x01..0x06` symbol decoding. | ~~High~~ Realised | **5–10 days** of container-parser work in Phase 1 (was estimated 0.5–1 day in v1) | Probe report at `docs/probes/2026-05-07-qvw-framing.md` documents the format. §3.2 split into container + per-block-kind decoders. PyQvd `qvd-utils` Rust acceleration applies only to inner symbol decoding, not to the container scan. |
 | Synthetic keys or QUALIFY/UNQUALIFY scripts break schema mapping | Medium | 0.5 day | Test on all 3 reference files; document unsupported constructs in LIMITATIONS.md |
 | Encrypted / section-access QVW in wild | Low | — | Detect header flag, return clean error |
 | Table too large for RAM | Low | — | DuckDB spill-to-disk enabled by default |
@@ -809,6 +815,7 @@ No public QVW data-body parser exists; this project contributes the first open-s
 - QVD, QVF, QVS, or QVX file support (possible future extension — separate spec)
 - Encrypted or section-access QVWs
 - QlikView layout rendering (dashboards, chart visuals)
+- **PNG thumbnails embedded in QVW** (probe 2026-05-07 confirmed each QVW contains PNG thumbnails of sheets/charts). They are decompressible from the container but ignored by v1 parsers; a future extension could surface them via a `get_thumbnail(sheet_id)` tool.
 - Multi-user auth / row-level security
 - Streaming row output **over MCP** (a single tool-call response is fully materialised JSON; consumers paginate via SQL `LIMIT/OFFSET`). Note: `export_table` *does* stream internally via DuckDB `COPY` to disk — the limitation is on returning streaming rows to the MCP client, not on writing to a file.
 
@@ -816,7 +823,9 @@ No public QVW data-body parser exists; this project contributes the first open-s
 
 ## 14. Open questions (to resolve during implementation)
 
-### 14.1 Pre-architecture probes — **MUST PRECEDE Phase 1 parser/data.py**
+### 14.1 Pre-architecture probes — **CLEARED 2026-05-07**
+
+**v3 gate update:** the probe ran on all 3 reference QVWs on 2026-05-07. Findings are documented in `docs/probes/2026-05-07-qvw-framing.md` and reflected in §3.2 (container + per-block-kind layout) and §9 row 1 (re-estimated). Phase 1 is unblocked. Pre-architecture rule still applies for any *future* unknowns: a probe report MUST exist before code commits to a binary-format assumption.
 
 **v2 gate (2026-05-06):** the v1 wording put these probes "in Phase 1 day 1" — but §3.2 already commits to PyQvd-adapted `parser/data.py`. If probe outcome shows the framing differs significantly from QVD, "adaptation" is actually a from-scratch parser. The architecture commitment is therefore conditional on the probe — and the probe runs **before** any code in `src/mcp_qlikview/parser/` is written. No `pyproject.toml` either, until the probe report exists at `docs/probes/2026-MM-DD-qvw-framing.md`.
 
@@ -826,11 +835,11 @@ Gate: probe report MUST contain:
 - A description of the additional framing layer (offsets, magic bytes, length prefixes) sufficient to write a Python parser, **OR**
 - A "format incompatible — escalate" finding that triggers a re-plan (e.g., consider Engine API instead of binary parsing).
 
-Probe questions:
+Probe questions and outcomes (2026-05-07):
 
-1. **QVW data-block framing** — does the QVW binary wrap QVD bodies with an additional framing layer, or is each zlib block a direct QVD-style XML header + symbol + index sequence? Method: `xxd` on decompressed blocks from `LTV_analisys.qvw`, compare to canonical QVD layout (from PyQvd docs). Outcome feeds §9 risk row 1 and decides whether `parser/data.py` is "adapted from PyQvd" or "from scratch".
-2. **Encrypted QVW detection signal** — which header byte or decompression behaviour reliably indicates an encrypted or section-access-protected file, to return `encrypted_unsupported` cleanly. Outcome feeds §6.2.
-3. **Symbol-table flag exhaustion** — PyQvd documents flags `0x01..0x06`. Verify each flag is reachable in the 3 reference files; if a 7th flag appears, document it. Catches Qlik-version drift early.
+1. **QVW data-block framing** — Resolved: **partial framing**. QVW is a custom container with 23-byte file header + N zlib streams + `EXEX` trailer. Decompressed blocks are NOT QVD-shaped. PyQvd container code is not reusable. PyQvd inner symbol decoder (`0x01..0x06` flags) IS reusable inside individual blocks. Detail: `docs/probes/2026-05-07-qvw-framing.md`.
+2. **Encrypted QVW detection signal** — Deferred: no encrypted reference QVW available at probe time. Detection will be best-effort ("zlib-decompression-failure-with-non-malformed-header" heuristic) until an encrypted sample surfaces. `error_code: "encrypted_unsupported"` retained; population requires future probe.
+3. **Symbol-table flag exhaustion** — Resolved: flags `0x01..0x06` appear in the reference files; no evidence of a 7th flag. PyQvd's documented flag set is treated as complete for v1.0.0; a flag-not-recognised parser path raises `parse_failed` with a hint to file a `[probe] new symbol flag` issue.
 
 ### 14.2 Phase 2 design questions
 
@@ -846,6 +855,19 @@ Note: schema-name sanitization rule is defined authoritatively in §3.5 (not def
 ---
 
 ## 15. Changelog
+
+### v3 (2026-05-07) — §14.1.1 probe applied
+
+Probe ran on all 3 reference QVWs. Report: `docs/probes/2026-05-07-qvw-framing.md`. Outcome: **partial framing**. QVW is a custom container (23-byte file header + N zlib streams + EXEX trailer), not a QVD-with-prefix. PyQvd is reusable for inner `0x01..0x06` symbol decoding only.
+
+| Where | What changed |
+|---|---|
+| §3.2 component table | Replaced single `parser/data.py` row with split: `parser/container.py` + `parser/blocks/{script,dictionary,tables,symbols,schema,data}.py`. PyQvd is now scoped to `parser/blocks/symbols.py` only. |
+| §9 row 1 | Removed "(not yet confirmed)"; estimate raised from "0.5–1 day extra" to "5–10 days" — full container parser is from-scratch, not adaptation. |
+| §13 | Added PNG thumbnails to out-of-scope (probe found `IEND`-trailed PNG payloads embedded in QVW). |
+| §14.1 | Marked probe gate **CLEARED**. Probe questions 1 and 3 resolved; question 2 (encrypted detection) deferred until an encrypted reference is available. |
+| §7 Phase 1 | Estimate raised from ~2 days to ~6–8 days. Total project estimate: 10–14 dev-days (was ~6 in v1). |
+| Header / changelog | v3 banner with one-line summary. |
 
 ### v2 (2026-05-06) — adversarial review applied
 

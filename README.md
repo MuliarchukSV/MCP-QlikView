@@ -2,9 +2,9 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server that reads QlikView `.qvw` files and exposes their contents — load scripts, table schemas, and all data rows — to Claude Code via DuckDB SQL.
 
-**Status:** design-phase, **spec v2** (2026-05-06). Implementation has not started.
+**Status:** design-phase, **spec v3** (2026-05-07). Phase 1 unblocked. Implementation has not started.
 
-The canonical design document is [`docs/specs/2026-04-23-mcp-qlikview-design.md`](docs/specs/2026-04-23-mcp-qlikview-design.md). v2 incorporates fixes from an adversarial review — see §15 in the spec for the per-issue diff. **Two items remain pending user action before Phase 1 starts:** (a) reserving the `mcp-qlikview` name on PyPI to prevent squatting, and (b) executing the §14.1.1 framing probe on the reference QVWs.
+The canonical design document is [`docs/specs/2026-04-23-mcp-qlikview-design.md`](docs/specs/2026-04-23-mcp-qlikview-design.md). v2 (2026-05-06) incorporated fixes from an adversarial review; v3 (2026-05-07) applied the §14.1.1 framing probe — see [`docs/probes/2026-05-07-qvw-framing.md`](docs/probes/2026-05-07-qvw-framing.md) for findings. **One item remains pending user action:** reserving the `mcp-qlikview` name on PyPI to prevent squatting.
 
 ## What it does (planned)
 
@@ -51,8 +51,9 @@ pip install mcp-qlikview
 |---|---|---|
 | Design v1 | Spec drafted | Done (2026-04-23) |
 | Design v2 | Adversarial review applied (14 issues fixed in spec) | Done (2026-05-06) |
-| Pre-Phase-1 | §14.1.1 framing probe + PyPI name reservation | Pending user action |
-| Phase 1 | 8 metadata tools (script/tables/vars/sheets/sources/search) | Blocked on probe |
+| Design v3 | §14.1.1 probe report applied to spec | Done (2026-05-07) |
+| Pre-Phase-1 | PyPI name reservation | Pending user action |
+| Phase 1 | 8 metadata tools (script/tables/vars/sheets/sources/search/reload) | Unblocked, not started |
 | Phase 2 | Data extraction via DuckDB SQL | Not started |
 | Phase 3 | Watcher, export, PyPI release | Not started |
 
