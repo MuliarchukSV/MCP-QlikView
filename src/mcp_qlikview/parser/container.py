@@ -105,6 +105,35 @@ class QvwContainer:
     blocks: list[RawBlock]
 
 
+@dataclass(frozen=True, slots=True)
+class LogicalBlock:
+    """Higher-level grouping over :class:`RawBlock`.
+
+    The §14.1.1 framing probe found that QlikView segments any decompressed
+    payload longer than 256 KB into fixed-size 256 KB zlib chunks plus a
+    4-byte inter-chunk length-prefix gap. The 2026-05-08 follow-up probe
+    confirmed that consecutive ``data_chunk`` blocks form one logical
+    payload (typically a single field's symbol table). This type exposes
+    that grouping: ``payload`` is the concatenation of every contributing
+    block's decompressed bytes, suitable for direct hand-off to a block
+    decoder (e.g. :func:`mcp_qlikview.parser.blocks.symbols.decode_symbol_block`).
+
+    Attributes:
+        first_index: ``RawBlock.index`` of the leftmost contributing block.
+        last_index: ``RawBlock.index`` of the rightmost contributing block.
+            Equal to ``first_index`` for single-block groups.
+        payload: Concatenated decompressed bytes from all contributing blocks.
+        kind: ``"symbol_group"`` for a run of ``data_chunk`` blocks merged
+            into one buffer; ``"single"`` for a metadata/unknown block that
+            wasn't merged with neighbours.
+    """
+
+    first_index: int
+    last_index: int
+    payload: bytes
+    kind: str
+
+
 def _classify_block(decompressed_size: int, gap_after: int) -> str:
     """Heuristic kind classifier driven by probe findings.
 
@@ -248,6 +277,52 @@ def _try_decompress(body: bytes, offset: int, end: int) -> tuple[int, bytes]:
         return 0, b""
     consumed = (end - offset) - len(obj.unused_data)
     return consumed, decompressed
+
+
+def iter_logical_blocks(container: QvwContainer) -> list[LogicalBlock]:
+    """Group ``container.blocks`` into logical payloads (probe-driven).
+
+    Consecutive ``data_chunk`` blocks are merged into one
+    :class:`LogicalBlock` of kind ``"symbol_group"``; every other block
+    becomes its own ``"single"`` :class:`LogicalBlock`. The 4-byte
+    inter-chunk gaps recorded in :class:`RawBlock.gap_after` are NOT
+    included in the merged payload — they are container framing, not part
+    of the user-visible structure.
+
+    The result is a flat list rather than an iterator so callers can index
+    into it (e.g. block 0 = script, block 1 = field-name dict).
+    """
+    out: list[LogicalBlock] = []
+    pending: list[RawBlock] = []
+
+    def _flush() -> None:
+        if not pending:
+            return
+        out.append(
+            LogicalBlock(
+                first_index=pending[0].index,
+                last_index=pending[-1].index,
+                payload=b"".join(b.decompressed for b in pending),
+                kind="symbol_group",
+            )
+        )
+        pending.clear()
+
+    for block in container.blocks:
+        if block.kind_hint == "data_chunk":
+            pending.append(block)
+            continue
+        _flush()
+        out.append(
+            LogicalBlock(
+                first_index=block.index,
+                last_index=block.index,
+                payload=block.decompressed,
+                kind="single",
+            )
+        )
+    _flush()
+    return out
 
 
 def parse_bytes(raw: bytes) -> QvwContainer:
