@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.10", "3.11", "3.12"]
+        include:
+          - os: macos-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - name: Create venv
+        run: uv venv --python ${{ matrix.python }}
+
+      - name: Install package
+        run: VIRTUAL_ENV="$PWD/.venv" uv pip install -e ".[dev,chardet]"
+        shell: bash
+
+      - name: Lint (ruff)
+        run: .venv/bin/ruff check src tests
+        shell: bash
+
+      - name: Type check (mypy strict)
+        run: .venv/bin/mypy src
+        shell: bash
+
+      - name: Unit + integration tests
+        # Excludes the two slowest tests (zlib-bomb stress) to keep CI under
+        # 60 s. Local runs hit them via plain `pytest`.
+        run: .venv/bin/pytest -ra --deselect tests/test_container.py::TestZlibBombProtection
+        shell: bash
+
+  zlib-bomb-suite:
+    # Run the slow bomb-protection tests in a separate job so failures here
+    # don't gate fast feedback on the main matrix. Single Python version is
+    # enough — the code path is platform-independent.
+    name: Slow bomb-protection tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv venv --python 3.12
+      - run: VIRTUAL_ENV="$PWD/.venv" uv pip install -e ".[dev,chardet]"
+      - run: .venv/bin/pytest tests/test_container.py::TestZlibBombProtection -v
