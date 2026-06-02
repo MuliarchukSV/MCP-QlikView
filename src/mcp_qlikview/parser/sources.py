@@ -19,12 +19,37 @@ import re
 from mcp_qlikview.models import DataSource
 
 _LIB_CONNECT = re.compile(r"\bLIB\s+CONNECT\s+TO\s+'([^']+)'", re.IGNORECASE)
-_ODBC_CONNECT = re.compile(r"\bODBC\s+CONNECT\s+TO\s+([^;]+);", re.IGNORECASE)
-_OLEDB_CONNECT = re.compile(r"\bOLEDB\s+CONNECT\s+TO\s+([^;]+);", re.IGNORECASE)
+# ODBC/OLEDB connection params use ``;`` internally (e.g. ``UID=a;PWD=b``), so
+# capture up to the statement-terminating ``;`` at end of line rather than the
+# first internal one — anchoring on ``$`` (MULTILINE). Truncating at the first
+# ``;`` would both lose most of the string and drop the very credentials we
+# then mask.
+_ODBC_CONNECT = re.compile(
+    r"\bODBC\s+CONNECT(?:32|64)?\s+TO\s+(.+?)\s*;\s*$", re.IGNORECASE | re.MULTILINE
+)
+_OLEDB_CONNECT = re.compile(
+    r"\bOLEDB\s+CONNECT(?:32|64)?\s+TO\s+(.+?)\s*;\s*$", re.IGNORECASE | re.MULTILINE
+)
 _FILE_LOAD = re.compile(
     r"\bFROM\s+(?:\[([^\]]+)\]|'([^']+)')",
     re.IGNORECASE,
 )
+
+_SECRET_KV = re.compile(
+    r"(\b(?:pwd|password|passwd|pass|secret|api[_-]?key|access[_-]?key|token)\s*=\s*)([^;]*)",
+    re.IGNORECASE,
+)
+"""Credential key=value pairs in an ODBC/OLEDB connection string.
+
+Raw connection strings routinely embed ``PWD=...`` / ``Password=...``. Echoing
+those verbatim into the MCP response leaks them into the model context and the
+client's logs, so the value is masked before it leaves the parser.
+"""
+
+
+def _mask_secrets(conn: str) -> str:
+    """Replace credential values in a connection string with ``***``."""
+    return _SECRET_KV.sub(r"\1***", conn)
 
 
 def _split_lines(script: str) -> list[str]:
@@ -59,7 +84,7 @@ def extract_sources(script: str) -> list[DataSource]:
         )
 
     for m in _ODBC_CONNECT.finditer(script):
-        conn = m.group(1).strip()
+        conn = _mask_secrets(m.group(1).strip().strip("'\""))
         _add(
             "odbc",
             conn,
@@ -71,7 +96,7 @@ def extract_sources(script: str) -> list[DataSource]:
         )
 
     for m in _OLEDB_CONNECT.finditer(script):
-        conn = m.group(1).strip().strip("'\"")
+        conn = _mask_secrets(m.group(1).strip().strip("'\""))
         _add(
             "oledb",
             conn,

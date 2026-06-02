@@ -23,7 +23,6 @@ from mcp_qlikview.models import (
     ScriptBundle,
     SearchResult,
     TableSummary,
-    VariablesBundle,
 )
 from mcp_qlikview.server import (
     _ServerState,
@@ -100,16 +99,31 @@ async def test_get_data_sources_finds_load_targets(qvw_state: _ServerState) -> N
 
 
 @pytest.mark.golden
-async def test_get_variables_returns_empty_in_phase1(qvw_state: _ServerState) -> None:
-    bundle = await _tool_get_variables(qvw_state, "LTV_analisys")
-    assert isinstance(bundle, VariablesBundle)
-    assert bundle.variables == {}
+async def test_get_variables_returns_unsupported_in_phase1(qvw_state: _ServerState) -> None:
+    # A silent empty mapping would read as "no variables"; v0.1.0 returns a
+    # structured unsupported error until the Phase 1.5 decoder lands.
+    result = await _tool_get_variables(qvw_state, "LTV_analisys")
+    assert isinstance(result, ErrorEnvelope)
+    assert result.error_code == "unsupported"
+    assert result.category == "unsupported"
 
 
 @pytest.mark.golden
-async def test_get_sheets_returns_empty_in_phase1(qvw_state: _ServerState) -> None:
-    sheets = await _tool_get_sheets(qvw_state, "LTV_analisys")
-    assert sheets == []
+async def test_get_variables_unknown_qvw_reports_resolution_error(
+    qvw_state: _ServerState,
+) -> None:
+    # Path resolution still runs first, so a bad arg gets the specific error.
+    result = await _tool_get_variables(qvw_state, "no_such_file")
+    assert isinstance(result, ErrorEnvelope)
+    assert result.error_code == "file_not_found"
+
+
+@pytest.mark.golden
+async def test_get_sheets_returns_unsupported_in_phase1(qvw_state: _ServerState) -> None:
+    result = await _tool_get_sheets(qvw_state, "LTV_analisys")
+    assert isinstance(result, ErrorEnvelope)
+    assert result.error_code == "unsupported"
+    assert result.category == "unsupported"
 
 
 @pytest.mark.golden

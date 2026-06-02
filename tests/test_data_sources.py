@@ -60,3 +60,26 @@ def test_dedupes_repeated_lib_references() -> None:
     sources = extract_sources(script)
     libs = [s for s in sources if s.kind == "lib"]
     assert len(libs) == 1
+
+
+def test_odbc_password_is_masked() -> None:
+    # Connection strings routinely embed credentials; they must never reach
+    # the model context or client logs verbatim (review fix #4).
+    script = "ODBC CONNECT TO MyDSN (UID=admin;PWD=s3cr3t;Database=sales);\n"
+    sources = extract_sources(script)
+    conn = next(s.connection_string or "" for s in sources if s.kind == "odbc")
+    assert "s3cr3t" not in conn
+    assert "PWD=***" in conn
+    assert "UID=admin" in conn  # non-secret keys preserved
+
+
+def test_oledb_password_variants_are_masked() -> None:
+    script = (
+        "OLEDB CONNECT TO "
+        "'Provider=SQLOLEDB;Data Source=srv;Password=topsecret;User ID=sa';\n"
+    )
+    sources = extract_sources(script)
+    conn = next(s.connection_string or "" for s in sources if s.kind == "oledb")
+    assert "topsecret" not in conn
+    assert "Password=***" in conn
+    assert "Data Source=srv" in conn

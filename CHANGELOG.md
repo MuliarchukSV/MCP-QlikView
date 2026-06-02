@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/) and the project follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.0.
 
+## [Unreleased] — adversarial-review fixes (round 2)
+
+A second BMAD-style adversarial review of the v0.1.0 code found 18 issues; all addressed here.
+
+### Fixed
+
+- **Store size limit ignored config** — `MetadataStore` was constructed with no arguments, keeping a hardcoded 2 GiB cap and ignoring `MCP_QVW_MAX_FILE_BYTES`. The store is now wired to `Config.max_file_bytes` at boot, so one limit governs both the `_resolve_qvw` pre-flight and the store.
+- **Wrong env var in size error** — the `qvw_too_large` hint referenced `MCP_QVW_MAX_FILE_SIZE_BYTES` (read by nothing); corrected to `MCP_QVW_MAX_FILE_BYTES`.
+- **`list_tables` / `search` skipped the size guard** — the index-derived paths parsed files without the pre-flight that `get_script` enforced, including full all-files scans of arbitrarily large QVWs. Both now apply `_check_size` per file and report oversized files as `parse_failed` / skipped.
+- **Cache data race** — handlers offload `ensure_parsed` via `asyncio.to_thread`, so two parses can run concurrently against the non-thread-safe `OrderedDict`. Added a `threading.Lock` around all cache mutations (the heavy parse still runs outside the lock).
+- **Connection-string credential leak + truncation** — ODBC/OLEDB connection strings were captured only up to the first internal `;` (dropping most of the string) and echoed verbatim. Now the full statement is captured (line-anchored regex, incl. `CONNECT32/64`) and credential values (`PWD`/`Password`/`token`/…) are masked to `***` before leaving the parser.
+- **O(n²) container decompression** — `_try_decompress` sliced `body[offset:end]` (and materialised `unused_data`) per block, copying the whole tail each time — the dominant cost in the ~135 s parse. Now feeds 1 MiB windows over a zero-copy `memoryview`, bounding per-block copies.
+- **`get_variables` / `get_sheets` silent empty results** — returned `{}` / `[]`, which reads as "no variables/sheets". Now return a structured `unsupported` error until the Phase 1.5 decoders land.
+- **`search` reported nothing for unimplemented scopes** — `fields`/`tables`/`variables` returned zero hits indistinguishable from real misses. Added `SearchResult.not_implemented_scopes`; removed the dead `variables` branch from the Phase 1 active set.
+- **Filesystem races surfaced as protocol errors** — `_call_tool` now catches `OSError` and returns a structured `ErrorEnvelope`, honouring the module's stated error contract.
+- **`reload` of an oversized cached file was a silent no-op** — reload now resolves the path with the size pre-flight disabled so a file that grew past the limit can still be invalidated.
+- **`log_level` config was dead** — `MCP_QVW_LOG_LEVEL` now adjusts the `mcp_qlikview` logger at boot.
+- **Block-decode errors didn't say which block** — positional-drift failures now read `block N (<role>) decode failed: …`.
+- **Search line numbers diverged from `line_count`** — search now splits on `\n` (matching `ScriptBundle.line_count`) instead of `splitlines()`.
+- **Misc** — `/regex/x` (VERBOSE) flag documented; the regex match now runs off the event loop (ReDoS containment); replaced an `__import__("sys")` hack with a normal import; scan now logs skipped zlib-magic false positives at DEBUG.
+
+### Tests
+
+- New `tests/test_store.py` (size guard, env-var hint, LRU, concurrency stress, block-decode error context) and `tests/test_server_phase1.py` (not-implemented scopes, size pre-flight, unsupported variables/sheets, `\n` line numbers) run in CI without real fixtures. Plus connection-string masking tests. ruff + mypy strict clean.
+
 ## [0.1.0-alpha] — 2026-05-08
 
 First implementation release. Phase 1 from the [v3 design spec](docs/specs/2026-04-23-mcp-qlikview-design.md): metadata tools work end-to-end against real QVW files; data extraction is deferred to Phase 2.

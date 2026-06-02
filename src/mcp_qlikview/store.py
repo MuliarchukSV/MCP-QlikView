@@ -13,19 +13,43 @@ will join when Phase 2 introduces concurrent data parsing.
 
 from __future__ import annotations
 
+import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from mcp_qlikview.parser.blocks.dictionary import extract_field_names
 from mcp_qlikview.parser.blocks.script import extract_script
 from mcp_qlikview.parser.blocks.tables import extract_table_names
-from mcp_qlikview.parser.container import parse_bytes
+from mcp_qlikview.parser.container import QvwContainer, parse_bytes
 from mcp_qlikview.parser.prj import try_prj
 
 
 class QvwTooLargeError(ValueError):
     """Raised when a QVW file exceeds the configured size pre-flight bound."""
+
+
+def _decode_block(
+    decoder: Callable[[bytes], list[str]],
+    container: QvwContainer,
+    index: int,
+    role: str,
+) -> list[str]:
+    """Run ``decoder`` over ``container.blocks[index]`` with block context.
+
+    Wraps the wire-format ``ValueError`` so a positional-drift failure reads
+    as "block N (<role>) decode failed: ..." instead of a bare tag/UTF-8
+    complaint that hides *which* block was wrong.
+    """
+    try:
+        return decoder(container.blocks[index].decompressed)
+    except ValueError as exc:
+        raise ValueError(
+            f"block {index} ({role}) decode failed: {exc}; the container's "
+            "block ordering may have drifted (a zlib stream was missed or a "
+            "false positive matched during the scan)"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -69,6 +93,13 @@ class MetadataStore:
     Bounded LRU cache: when ``max_entries`` is reached, the least-recently-
     queried entry is evicted before a new entry is admitted. ``ensure_parsed``
     refreshes recency on cache hits.
+
+    Thread-safe: cache reads/writes are guarded by a lock because handlers
+    off-load :meth:`ensure_parsed` via ``asyncio.to_thread`` precisely so the
+    server can service *other* requests during a parse — i.e. two parses can
+    run concurrently. The (heavy) parse itself runs outside the lock; only the
+    ``OrderedDict`` mutations are serialised. Concurrent misses on the same
+    key may parse twice, but never corrupt the cache.
     """
 
     def __init__(
@@ -82,6 +113,7 @@ class MetadataStore:
         self._cache: OrderedDict[str, ParsedMetadata] = OrderedDict()
         self._max_entries = max_entries
         self._max_file_size_bytes = max_file_size_bytes
+        self._lock = threading.Lock()
 
     def ensure_parsed(self, qvw_path: Path) -> ParsedMetadata:
         """Return the cached :class:`ParsedMetadata` for ``qvw_path``.
@@ -97,16 +129,17 @@ class MetadataStore:
                 triggering a multi-gigabyte read.
         """
         key = str(qvw_path.resolve())
-        cached = self._cache.get(key)
-        if cached is not None:
-            self._cache.move_to_end(key)
-            return cached
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None:
+                self._cache.move_to_end(key)
+                return cached
 
         size = qvw_path.stat().st_size
         if size > self._max_file_size_bytes:
             raise QvwTooLargeError(
                 f"QVW file size {size} bytes exceeds limit "
-                f"{self._max_file_size_bytes}; raise MCP_QVW_MAX_FILE_SIZE_BYTES "
+                f"{self._max_file_size_bytes}; raise MCP_QVW_MAX_FILE_BYTES "
                 f"or split the file"
             )
 
@@ -131,20 +164,31 @@ class MetadataStore:
             script_result = extract_script(container.blocks[0].decompressed)
             script_source = "binary"
 
+        # Block ordering (0=script, 1=field dict, 2=tables) is positional per
+        # the framing probe. If the zlib scan missed a stream or matched a
+        # false positive, indices drift and the wrong buffer is decoded here —
+        # surface that as a legible error rather than an opaque tag/UTF-8 fault.
+        field_names = _decode_block(extract_field_names, container, 1, "field-name dictionary")
+        table_names = _decode_block(extract_table_names, container, 2, "table-name list")
+
         meta = ParsedMetadata(
             script=script_result.text,
             script_encoding=script_result.encoding,
             script_decode_replacements=script_result.decode_replacements,
             script_source=script_source,
-            field_names=extract_field_names(container.blocks[1].decompressed),
-            table_names=extract_table_names(container.blocks[2].decompressed),
+            field_names=field_names,
+            table_names=table_names,
             block_count=len(container.blocks),
         )
-        self._admit(key, meta)
+        with self._lock:
+            self._admit(key, meta)
         return meta
 
     def _admit(self, key: str, meta: ParsedMetadata) -> None:
-        """Insert ``meta`` and evict LRU entries while over capacity."""
+        """Insert ``meta`` and evict LRU entries while over capacity.
+
+        Caller must hold ``self._lock``.
+        """
         self._cache[key] = meta
         self._cache.move_to_end(key)
         while len(self._cache) > self._max_entries:
@@ -156,12 +200,13 @@ class MetadataStore:
         Returns the list of absolute paths whose cache entries were
         invalidated, for ``ReloadResult.invalidated``.
         """
-        if qvw_path is None:
-            keys = list(self._cache.keys())
-            self._cache.clear()
-            return keys
-        key = str(qvw_path.resolve())
-        if key in self._cache:
-            del self._cache[key]
-            return [key]
-        return []
+        with self._lock:
+            if qvw_path is None:
+                keys = list(self._cache.keys())
+                self._cache.clear()
+                return keys
+            key = str(qvw_path.resolve())
+            if key in self._cache:
+                del self._cache[key]
+                return [key]
+            return []
