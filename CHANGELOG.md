@@ -2,9 +2,16 @@
 
 All notable changes to this project will be documented in this file. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/) and the project follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.0.
 
-## [Unreleased] — Phase 2a: field value inventory
+## [Unreleased] — Phase 2a/2b
 
 ### Added
+- **Table→field directory** (`parser/blocks/layout.py`) — decodes QVW's internal
+  table-to-field-range block (validated by signature), so `list_tables` now
+  reports a real per-table `field_count` with `parse_status="ok"` (on the LTV
+  reference: 9/9/9/8/9/20 = 64 fields across 6 tables). `row_count` still needs
+  the Phase 2b row index.
+- **`search` fields + tables scopes** — match the pattern against field names and
+  table names; only `variables` remains unimplemented.
 - **`get_field_values` tool** — returns per-field distinct-value summaries
   (cardinality, value type, sample values) decoded from the QVW symbol tables,
   plus the field-name and table-name lists. No row-level data required. On the

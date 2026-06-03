@@ -261,18 +261,20 @@ async def _tool_list_tables(
                 )
             )
             continue
+        tfm = meta_or_err.table_field_map
         for table_name in meta_or_err.table_names:
+            # The table→field directory (block 374) gives the per-table field
+            # count. When it can't be decoded, fall back to 0/"pending".
+            fields = tfm.get(table_name) if tfm else None
             out.append(
                 TableSummary(
                     qvw=fi.basename,
                     schema=fi.schema_name,
                     table_name=table_name,
-                    # Phase 1 cannot decode per-table field lists yet; the
-                    # global dictionary size would over-report. ``0`` with
-                    # ``parse_status="pending"`` signals "value not yet
-                    # known" per spec §4.3 conventions.
-                    field_count=0,
-                    parse_status="pending",
+                    field_count=len(fields) if fields is not None else 0,
+                    # row_count still needs the Phase 2b row index; "ok" here
+                    # means the field list is known, not the row count.
+                    parse_status="ok" if fields is not None else "pending",
                 )
             )
     return out

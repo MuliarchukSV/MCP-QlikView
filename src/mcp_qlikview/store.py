@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mcp_qlikview.parser.blocks.dictionary import extract_field_names
+from mcp_qlikview.parser.blocks.layout import extract_table_field_map
 from mcp_qlikview.parser.blocks.script import extract_script
 from mcp_qlikview.parser.blocks.tables import extract_table_names
 from mcp_qlikview.parser.blocks.values import ValueSet, extract_value_sets
@@ -81,6 +82,10 @@ class ParsedMetadata:
     value_sets: list[ValueSet]
     """Per-field distinct-value summaries (cardinality, type, samples).
     Cheap partial decode — see :func:`extract_value_sets`."""
+
+    table_field_map: dict[str, list[str]] | None
+    """Table name → ordered field names (QVW internal layout), or ``None`` when
+    the directory block can't be decoded. See :func:`extract_table_field_map`."""
 
 
 _DEFAULT_MAX_ENTRIES: int = 16
@@ -185,6 +190,7 @@ class MetadataStore:
             table_names=table_names,
             block_count=len(container.blocks),
             value_sets=extract_value_sets(container),
+            table_field_map=extract_table_field_map(container, field_names, table_names),
         )
         with self._lock:
             self._admit(key, meta)
