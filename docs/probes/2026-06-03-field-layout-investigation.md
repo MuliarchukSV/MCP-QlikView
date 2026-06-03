@@ -96,15 +96,52 @@ this in `QvdFieldHeader`; QVW keeps it in a not-yet-located compact binary
 block — candidates: block 0's trailer with repeating `F` markers, or a small
 uninspected block). Find that and row reconstruction is fully specified.
 
+## Addendum 2 — global layout LOCATED (blocks 373-375)
+
+The global layout directory is the small tail-block trio (`/tmp/probe_layout.py`):
+
+- **block 375** (64 bytes): `00 01 02 … 3f` — **exactly 64 entries = the 64
+  fields**, identity order. The field-order / field-id table. *(Confirmed.)*
+- **block 374** (12 bytes): six pairs `(0,0) (1,9) (2,18) (3,27) (4,35) (5,44)`
+  — **6 entries = the 6 tables**; the second column 0,9,18,27,35,44 partitions
+  64 as `9,9,9,8,9,20`. Strong candidate for a table→field-range directory,
+  **but** taking it as literal contiguous field ranges puts the measures
+  (`SumSaleUSD…`) in `TwoAndMoreOrder4LTV` rather than `DataLTV`, so the
+  indirection likely runs through block 373/375, not raw field order.
+  *(Semantics need confirmation.)*
+- **block 373** (138 bytes): 69 `(code, field_id)` pairs — identity for
+  field_ids 0..22, then permuted (`20→0, 21→23, 22→24, …`). This is the
+  **byte→field routing table** used to unpack a packed record byte by byte.
+  *(Structure clear; exact unpack use TBD.)*
+- block 0's trailer is just NUL padding with a stray `46 ('F')` — not the
+  layout block.
+
+**Bit widths are derivable, not stored explicitly.** Per OpenQVD §7.3,
+`BitWidth = ceil(log2(NoOfSymbols + extra))`; QVW appears to keep only the
+field/table directory (373-375) and derive widths from each field's symbol
+count. Cardinalities are in hand (e.g. idCustomer 478,993 → 19 bits;
+Route field 408,260 → 19 bits; 12,186 → 14 bits).
+
+### Row-index blocks sized
+
+The packed-record run splits into two table groups by decompressed size:
+blocks **355-363** (8 × 1,978,368 B + 240,626 B) and **364-368**
+(4 × 1,990,656 B + 1,677,276 B) — two large tables' record blocks. Exact
+`RecordByteSize` falls out once the per-table field set + derived bit widths
+are summed (`RecordByteSize = ceil(Σ BitWidth / 8)`).
+
+## Status: Phase 2 fully mapped end-to-end
+
+Every structural piece is now identified:
+`field/table directory (373-375)` + `per-field symbol tables` +
+`per-field symbol-offset index (370-372)` + `packed row-index (355-368)`.
+
 ## Next probe targets
 
-1. **Locate the global field-layout block** (BitOffset/BitWidth/Bias per field
-   per table) — the last missing piece. Check block 0's trailer and the small
-   tail blocks (373-375) which had tell-tale `00 00 01 01 02 02…` /
-   `00 01 02 03…` ramp patterns (possible bit-width or field-id tables).
-2. Confirm the block-372 column-A "offset" reading by indexing into the
-   matching field's symbol table and checking the bytes line up with decoded
-   symbols.
+1. Confirm block 374 table-directory semantics (resolve the measure-placement
+   anomaly via the 373/375 indirection).
+2. Fully decode block 373 routing → unpack one real record from blocks 355+ and
+   verify field values against the symbol tables (end-to-end proof on one row).
 3. Long-string >255-byte encoding (group 143-159, `unknown flag 0x31`).
-4. Field→table assignment: tie the 64 field names + 6 tables to their symbol
-   tables and per-field index blocks (in file order, validated by cardinality).
+4. Then implement: `parser/blocks/layout.py` (373-375) + `data.py` (row unpack)
+   + DuckDB ingest + `query`/`describe_table`/`export_table`.
