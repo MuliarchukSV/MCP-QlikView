@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/) and the project follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.0.
 
-## [Unreleased] — adversarial-review fixes (round 2)
+## [0.1.1] — 2026-06-03 — adversarial-review fixes (round 2)
 
 A second BMAD-style adversarial review of the v0.1.0 code found 18 issues; all addressed here.
 

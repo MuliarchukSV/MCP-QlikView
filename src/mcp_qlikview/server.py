@@ -367,7 +367,7 @@ async def _tool_get_script(state: _ServerState, qvw: str) -> ScriptBundle | Erro
 async def _tool_get_variables(
     state: _ServerState, qvw: str
 ) -> VariablesBundle | ErrorEnvelope:
-    """Not implemented in v0.1.0 — the variable-block decoder lands in Phase 1.5.
+    """Not implemented yet — the variable-block decoder lands in Phase 1.5.
 
     Returns a structured ``unsupported`` error rather than an empty mapping: a
     silent ``{}`` would let the caller wrongly conclude the QVW has no
@@ -380,13 +380,13 @@ async def _tool_get_variables(
     return ErrorEnvelope(
         error_code="unsupported",
         category="unsupported",
-        message="get_variables is not implemented in v0.1.0.",
+        message="get_variables is not implemented yet.",
         hint="The variable decoder ships in Phase 1.5; track it in LIMITATIONS.md.",
     )
 
 
 async def _tool_get_sheets(state: _ServerState, qvw: str) -> list[Sheet] | ErrorEnvelope:
-    """Not implemented in v0.1.0 — the sheet decoder is post-Phase-2 work.
+    """Not implemented yet — the sheet decoder is post-Phase-2 work.
 
     Returns ``unsupported`` rather than ``[]`` for the same reason as
     :func:`_tool_get_variables`: an empty list reads as "no sheets" instead of
@@ -398,7 +398,7 @@ async def _tool_get_sheets(state: _ServerState, qvw: str) -> list[Sheet] | Error
     return ErrorEnvelope(
         error_code="unsupported",
         category="unsupported",
-        message="get_sheets is not implemented in v0.1.0.",
+        message="get_sheets is not implemented yet.",
         hint="The sheet decoder ships after Phase 2; track it in LIMITATIONS.md.",
     )
 
@@ -600,7 +600,7 @@ _TOOL_DEFS: list[types.Tool] = [
     ),
     types.Tool(
         name="get_variables",
-        description="Return user-defined Qlik variables. Not implemented in v0.1.0 (returns an 'unsupported' error); ships in Phase 1.5.",
+        description="Return user-defined Qlik variables. Not implemented yet (returns an 'unsupported' error); ships in Phase 1.5.",
         inputSchema={
             "type": "object",
             "properties": {"qvw": {"type": "string"}},
@@ -610,7 +610,7 @@ _TOOL_DEFS: list[types.Tool] = [
     ),
     types.Tool(
         name="get_sheets",
-        description="Return Qlik sheet definitions. Not implemented in v0.1.0 (returns an 'unsupported' error); ships after Phase 2.",
+        description="Return Qlik sheet definitions. Not implemented yet (returns an 'unsupported' error); ships after Phase 2.",
         inputSchema={
             "type": "object",
             "properties": {"qvw": {"type": "string"}},
