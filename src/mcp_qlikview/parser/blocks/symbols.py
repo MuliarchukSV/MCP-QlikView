@@ -131,13 +131,27 @@ def _decode_entry(flag: int, buf: bytes, pos: int) -> tuple[SymbolEntry, int]:
 
 
 def _read_length_prefixed_text(buf: bytes, pos: int) -> tuple[str, int]:
-    """Read ``<len:1> <bytes>`` UTF-8 text from ``buf`` starting at ``pos``."""
+    """Read length-prefixed UTF-8 text from ``buf`` starting at ``pos``.
+
+    The length is a single byte, except the sentinel ``0xFF`` which escapes to
+    a 4-byte little-endian u32 length that follows it — required for strings
+    longer than 255 bytes (probe 2026-06-03: LTV group 143-159 carries 256-byte
+    route descriptions encoded this way).
+    """
     if pos >= len(buf):
         raise InvalidSymbolBlockError(
             f"truncated length byte at offset {pos}"
         )
     length = buf[pos]
-    start = pos + 1
+    if length == 0xFF:
+        if pos + 5 > len(buf):
+            raise InvalidSymbolBlockError(
+                f"truncated 0xFF-escaped u32 length at offset {pos}"
+            )
+        (length,) = struct.unpack_from("<I", buf, pos + 1)
+        start = pos + 5
+    else:
+        start = pos + 1
     end = start + length
     if end > len(buf):
         raise InvalidSymbolBlockError(

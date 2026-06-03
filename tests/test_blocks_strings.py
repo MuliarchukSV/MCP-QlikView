@@ -35,6 +35,40 @@ def _encode_string_list(strings: list[bytes]) -> bytes:
     return b"".join(parts)
 
 
+def _encode_long_string_entry(s: bytes) -> bytes:
+    """Tag 0x04 + 0xFF escape + LE u32 length + bytes (probe 2026-06-03)."""
+    return b"\x04\xff" + struct.pack("<I", len(s)) + s
+
+
+class TestLongStringEscape:
+    """A length byte of 0xFF escapes to a 4-byte LE u32 length — confirmed on
+    LTV group 143-159 where a 256-byte route string broke the 1-byte decoder."""
+
+    def test_decodes_string_longer_than_255_bytes(self) -> None:
+        long_s = ("1310/014 м. Косів - " * 20).encode("utf-8")
+        assert len(long_s) > 255
+        buf = b"\x00\x00\x00\x00" + struct.pack("<I", 1) + _encode_long_string_entry(long_s)
+        out = decode_tagged_string_list(buf)
+        assert out == [long_s.decode("utf-8")]
+
+    def test_mixed_short_and_long(self) -> None:
+        short = b"abc"
+        long_s = b"x" * 300
+        buf = (
+            b"\x00\x00\x00\x00"
+            + struct.pack("<I", 3)
+            + b"\x04" + bytes([len(short)]) + short
+            + _encode_long_string_entry(long_s)
+            + b"\x04" + bytes([2]) + b"yz"
+        )
+        assert decode_tagged_string_list(buf) == ["abc", "x" * 300, "yz"]
+
+    def test_truncated_u32_length_raises(self) -> None:
+        buf = b"\x00\x00\x00\x00" + struct.pack("<I", 1) + b"\x04\xff\x00\x01"  # u32 cut short
+        with pytest.raises(InvalidStringListError):
+            decode_tagged_string_list(buf)
+
+
 class TestStringList:
     def test_decodes_empty_list(self) -> None:
         buf = _encode_string_list([])

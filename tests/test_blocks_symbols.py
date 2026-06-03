@@ -51,6 +51,32 @@ class TestFlag04TextOnly:
         assert entries == [SymbolEntry(flag=0x04, text="idCustomer3LTV", numeric=None)]
 
 
+class TestLongStringEscape:
+    """Length byte 0xFF escapes to a 4-byte LE u32 length (probe 2026-06-03,
+    LTV group 143-159: a 256-byte route string broke the 1-byte decoder)."""
+
+    def test_flag04_long_text(self) -> None:
+        long_s = ("Київ - Харків : " * 30).encode("utf-8")
+        assert len(long_s) > 255
+        block = _enc_count_header(1) + b"\x04\xff" + struct.pack("<I", len(long_s)) + long_s
+        entries = decode_symbol_block(block)
+        assert entries == [SymbolEntry(flag=0x04, text=long_s.decode("utf-8"), numeric=None)]
+
+    def test_flag05_long_text_then_int(self) -> None:
+        long_s = b"r" * 300
+        block = (
+            _enc_count_header(1)
+            + b"\x05\xff" + struct.pack("<I", len(long_s)) + long_s + struct.pack("<i", 7)
+        )
+        entries = decode_symbol_block(block)
+        assert entries == [SymbolEntry(flag=0x05, text="r" * 300, numeric=7)]
+
+    def test_truncated_u32_escape_raises(self) -> None:
+        block = _enc_count_header(1) + b"\x04\xff\x00\x01"  # u32 length cut short
+        with pytest.raises(InvalidSymbolBlockError):
+            decode_symbol_block(block)
+
+
 class TestFlag01IntOnly:
     def test_decodes_int_only(self) -> None:
         # 4-byte LE int = 42

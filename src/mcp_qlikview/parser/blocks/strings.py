@@ -78,7 +78,16 @@ def decode_tagged_string_list(buf: bytes) -> list[str]:
                 f"unknown string tag 0x{tag:02x} at offset {pos} (expected 0x{STRING_TAG:02x})"
             )
         length = buf[pos + 1]
-        start = pos + 2
+        if length == 0xFF:
+            # Sentinel: real length is the following LE u32 (strings > 255 bytes).
+            if pos + 6 > len(buf):
+                raise InvalidStringListError(
+                    f"truncated 0xFF-escaped u32 length at entry {i + 1}/{count} (offset {pos})"
+                )
+            (length,) = struct.unpack_from("<I", buf, pos + 2)
+            start = pos + 6
+        else:
+            start = pos + 2
         end = start + length
         if end > len(buf):
             raise InvalidStringListError(
