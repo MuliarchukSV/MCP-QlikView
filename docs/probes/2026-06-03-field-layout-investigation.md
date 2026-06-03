@@ -59,10 +59,52 @@ and it is low-risk and shippable soon.
   + row-index → full per-row reconstruction → DuckDB ingest → `query(sql)` /
   `export_table`.
 
+## Addendum — block 372 decoded (per-field symbol-offset index)
+
+Columnar analysis (`/tmp/probe_b372.py`): block 372 = **13-byte header**
+(`5b 00 00 00` = u32 91, then 9 bytes) + **12,184 fixed 11-byte records**.
+12,184 ≈ **12,186** = the cardinality of the field in symbol-group 100-103, so
+block 372 is that **field's per-symbol index**, NOT the global field descriptor.
+First 16 records decode cleanly:
+
+| bytes | r0..r7 | reading |
+|---|---|---|
+| `[0:2]` u16 | 34, 35, 68, 101, 134, 167, 199, 232 (monotonic ↑) | **cumulative byte offset into the field's symbol table** — random access to symbol N |
+| `[2:4]` u16 | 4, 8, 12, 16, 20, 24, 28, 32 | linear `(rec+1)*4` stride |
+| `[4]` u8 | 2,3,4,5,6,7,8,9 (+1) | sequential ordinal |
+| `[5]` u8 | mostly `0x20`, some `0x40`/`0x00` | flag / bit-width class? |
+| `[6]` u8 | 1,2,3,4,5,6,5,7 | near-sequential sub-index |
+| `[7]` u8 | 0 | padding |
+| `[8]` u8 | 1 or 2 | type flag (numeric/text?) |
+| `[9:11]` u16 | varies (0x1fb2, 0x11b7, …) | per-symbol value/hash |
+
+Blocks 370 (w=10 → 741 recs ≈ a 741-symbol field) and 371 (w=11 → 1,248 recs)
+follow the same "record-count = field cardinality" pattern → each is a
+**per-field index**, one per field, sized to that field's distinct values.
+
+### Consequence — the full-row decode pipeline is now mapped
+
+```
+row-index packed block (355-368)  --bit-unpack-->  per-field symbol INDEX
+   per-field index block (372-style)[symbol idx].offset  -->  byte offset
+   field symbol table[offset]  -->  the value
+```
+
+The ONE remaining global unknown for Phase 2b is the **per-field
+`BitOffset`/`BitWidth`/`Bias` within each table's packed record** (QVD keeps
+this in `QvdFieldHeader`; QVW keeps it in a not-yet-located compact binary
+block — candidates: block 0's trailer with repeating `F` markers, or a small
+uninspected block). Find that and row reconstruction is fully specified.
+
 ## Next probe targets
 
-1. Decode block 372's 11-byte record format (map columns: field index? symbol
-   offset? bit width?). This is the Rosetta stone for both 2a mapping and 2b.
-2. Long-string >255-byte encoding (group 143-159, `unknown flag 0x31`).
-3. Correlate block-372 entries with the 64 field names and the symbol-table
-   offsets to produce the field→symbol-table map.
+1. **Locate the global field-layout block** (BitOffset/BitWidth/Bias per field
+   per table) — the last missing piece. Check block 0's trailer and the small
+   tail blocks (373-375) which had tell-tale `00 00 01 01 02 02…` /
+   `00 01 02 03…` ramp patterns (possible bit-width or field-id tables).
+2. Confirm the block-372 column-A "offset" reading by indexing into the
+   matching field's symbol table and checking the bytes line up with decoded
+   symbols.
+3. Long-string >255-byte encoding (group 143-159, `unknown flag 0x31`).
+4. Field→table assignment: tie the 64 field names + 6 tables to their symbol
+   tables and per-field index blocks (in file order, validated by cardinality).
