@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-qlikview"
-version = "0.1.1"
+version = "0.2.0"
 description = "MCP server exposing QlikView QVW files (load script, schema, data) to Claude Code via stdio."
 readme = "README.md"
 requires-python = ">=3.10"

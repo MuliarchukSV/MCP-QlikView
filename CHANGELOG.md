@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/) and the project follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.0.
 
-## [Unreleased] — Phase 2a/2b
+## [0.2.0] — 2026-06-03 — Phase 2a + table directory
 
 ### Added
 - **Table→field directory** (`parser/blocks/layout.py`) — decodes QVW's internal
