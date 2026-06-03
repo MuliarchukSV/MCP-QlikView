@@ -29,14 +29,14 @@ Probe §3 noted no encrypted reference file was available, so the `encrypted_uns
 
 ## Performance
 
-- **Cold parse on 141 MB is ~135 s** on a typical laptop. Within the 180 s spec budget but tight on slow CI runners. The spec mentions a Rust-fallback (`qvd-utils`) as a stretch optimisation; not in scope for v0.1.0.
+- **Cold parse on 141 MB.** The container scan no longer copies the whole remaining body per block (the previous O(n²) `body[offset:end]` slicing dominated the old ~135 s figure); it now feeds 1 MiB windows over a zero-copy `memoryview`. Still within the 180 s spec budget; the Rust-fallback (`qvd-utils`) the spec mentions as a stretch optimisation is not in scope for v0.1.x.
 - **Memory: ~640 MB peak** during parse of `dbhDesigning.qvw` (141 MB compressed → ~377 MB decompressed in container blocks). Cache is bounded to 16 entries (~64 MB metadata payload) post-parse.
 - **No filesystem watcher.** `MCP_QVW_WATCH=true` is accepted as config but no watching happens; `reload` is the only invalidation path. Phase 3 deliverable.
 
 ## Scope-related gaps
 
-- **`-prj` fast-path: script only.** The directory may also contain XML files for variables and sheets; we don't read them yet. Variables/sheets tools return empty mappings until Phase 1.5 implements the XML parser.
-- **`get_data_sources` regex misses several patterns:** `REST CONNECTOR`, `CUSTOM CONNECT`, inline `[]` `LOAD` blocks, dynamic `$(vSource)` interpolation. Captures the four most common (LIB CONNECT, ODBC CONNECT, OLEDB CONNECT, FROM '<file>' / FROM [<file>]). Phase 1.5 candidate.
+- **`-prj` fast-path: script only.** The directory may also contain XML files for variables and sheets; we don't read them yet. `get_variables` / `get_sheets` return a structured `unsupported` error (not a misleading empty result) until Phase 1.5 implements the XML/variable-block parser.
+- **`get_data_sources` regex misses several patterns:** `REST CONNECTOR`, `CUSTOM CONNECT`, inline `[]` `LOAD` blocks, dynamic `$(vSource)` interpolation. Captures the four most common (LIB CONNECT, ODBC/OLEDB CONNECT incl. `CONNECT32/64`, FROM '<file>' / FROM [<file>]). Connection strings are captured whole (up to the statement-terminating `;`) and credential values (`PWD`/`Password`/`token`/…) are masked to `***` before they leave the parser. Phase 1.5 candidate for the remaining patterns.
 - **Synthetic-key tables are not surfaced as views** (Phase 2 deliverable); they will appear in `list_tables` once Phase 2 lands.
 - **Cross-QVW dependencies are not resolved.** Two QVWs that share the same field name in `LIB CONNECT` won't be linked across schemas; that's also Phase 2.
 

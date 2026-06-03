@@ -134,6 +134,10 @@ class SearchResult(_StrictModel):
     scanned_qvws: list[str]
     skipped_qvws: list[SkippedQvw] = []
     elapsed_ms: int
+    not_implemented_scopes: list[str] = []
+    """Requested scopes that returned no hits because the decoder is not in
+    this release (e.g. ``fields``/``tables`` in Phase 1) — distinguishes
+    "not yet supported" from "supported but zero matches"."""
 
 
 # ---- Reload ---------------------------------------------------------------

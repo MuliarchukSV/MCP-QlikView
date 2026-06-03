@@ -15,8 +15,11 @@ here and decode block-specific structures.
 
 from __future__ import annotations
 
+import logging
 import zlib
 from dataclasses import dataclass
+
+log = logging.getLogger("mcp_qlikview.container")
 
 QVW_MAGIC_PREFIX: bytes = bytes.fromhex("70170100c106000002000000")
 """First 12 bytes of every valid QVW file. Constant across the 3 reference
@@ -211,6 +214,7 @@ def _scan_blocks(body: bytes) -> list[tuple[int, bytes, int]]:
     out: list[tuple[int, bytes, int]] = []
     pos = 0
     end = len(body)
+    false_positives = 0
     while pos < end:
         candidate = _find_next_zlib_start(body, pos, end)
         if candidate < 0:
@@ -219,6 +223,7 @@ def _scan_blocks(body: bytes) -> list[tuple[int, bytes, int]]:
         if consumed == 0:
             # Not a real stream — false positive on a 0x78 byte. Step one
             # forward and keep searching.
+            false_positives += 1
             pos = candidate + 1
             continue
         if len(out) >= MAX_BLOCKS_PER_FILE:
@@ -228,6 +233,14 @@ def _scan_blocks(body: bytes) -> list[tuple[int, bytes, int]]:
             )
         out.append((candidate, decompressed, consumed))
         pos = candidate + consumed
+    if false_positives:
+        # A high count can indicate a missed zlib variant (only four magic
+        # pairs are recognised) and explains downstream block-index drift.
+        log.debug(
+            "scan skipped %d zlib-magic false positives across %d byte body",
+            false_positives,
+            end,
+        )
     return out
 
 
@@ -246,37 +259,69 @@ def _find_next_zlib_start(body: bytes, start: int, end: int) -> int:
     return earliest
 
 
+_DECOMPRESS_INPUT_CHUNK: int = 1 << 20
+"""Compressed-input window fed to :func:`zlib.decompressobj.decompress` per call.
+
+Feeding the whole ``body[offset:]`` tail at once is O(n²): every block then
+copies the entire remaining body (and ``unused_data`` materialises it again),
+which is the dominant cost in the ~135 s parse of the 141 MB reference. Feeding
+in 1 MiB windows over a zero-copy :class:`memoryview` bounds both the per-call
+input slice and the post-EOF ``unused_data`` copy to this size.
+"""
+
+
 def _try_decompress(body: bytes, offset: int, end: int) -> tuple[int, bytes]:
     """Attempt to decompress a zlib stream at ``body[offset:end]``.
 
     Returns ``(consumed_bytes, decompressed_payload)`` on success, or
     ``(0, b"")`` if the bytes do not form a valid complete zlib stream.
 
+    Input is fed in :data:`_DECOMPRESS_INPUT_CHUNK` windows over a
+    :class:`memoryview` so neither the input slice nor ``unused_data`` ever
+    copies more than one window — see that constant's docstring for why.
+
     Decompression is hard-capped at :data:`MAX_DECOMPRESSED_BLOCK_SIZE` to
     bound memory under a zlib-bomb attack: a 1 KB compressed block claiming
     to inflate to 100 GB stops cleanly here instead of OOMing the process.
-    Exceeding the cap raises :class:`ZlibBombError`; a normal decompression
-    that happens to not consume the entire candidate (``not obj.eof``) is
-    treated as a non-stream.
+    Exceeding the cap raises :class:`ZlibBombError`; input that runs out
+    before the stream terminates (``not obj.eof``) is treated as a non-stream.
     """
     obj = zlib.decompressobj()
+    view = memoryview(body)
+    chunks: list[bytes] = []
+    produced = 0
+    pos = offset
+
+    def _pump(data: bytes | memoryview) -> None:
+        nonlocal produced
+        piece = obj.decompress(data, MAX_DECOMPRESSED_BLOCK_SIZE - produced + 1)
+        produced += len(piece)
+        if piece:
+            chunks.append(piece)
+        if produced > MAX_DECOMPRESSED_BLOCK_SIZE:
+            raise ZlibBombError(
+                f"block at offset {offset} decompresses past the "
+                f"{MAX_DECOMPRESSED_BLOCK_SIZE}-byte cap; refusing as zlib bomb"
+            )
+
     try:
-        decompressed = obj.decompress(
-            body[offset:end], max_length=MAX_DECOMPRESSED_BLOCK_SIZE
-        )
+        while not obj.eof:
+            if pos >= end:
+                # Input exhausted before the stream terminated — the bytes at
+                # ``offset`` are not a complete zlib stream.
+                return 0, b""
+            inbuf = view[pos : pos + _DECOMPRESS_INPUT_CHUNK]
+            pos += len(inbuf)
+            _pump(inbuf)
+            # If the output cap truncated this call, zlib buffers the rest as
+            # ``unconsumed_tail``; keep draining it before advancing ``pos``.
+            while obj.unconsumed_tail:
+                _pump(obj.unconsumed_tail)
     except zlib.error:
         return 0, b""
-    if obj.unconsumed_tail:
-        # max_length truncated output but more compressed input remains —
-        # this is the zlib-bomb signature.
-        raise ZlibBombError(
-            f"block at offset {offset} decompresses past the "
-            f"{MAX_DECOMPRESSED_BLOCK_SIZE}-byte cap; refusing as zlib bomb"
-        )
-    if not obj.eof:
-        return 0, b""
-    consumed = (end - offset) - len(obj.unused_data)
-    return consumed, decompressed
+
+    consumed = (pos - offset) - len(obj.unused_data)
+    return consumed, b"".join(chunks)
 
 
 def iter_logical_blocks(container: QvwContainer) -> list[LogicalBlock]:

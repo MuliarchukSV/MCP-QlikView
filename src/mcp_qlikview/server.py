@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import re
+import sys
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -71,6 +72,11 @@ class _ServerState:
         try:
             self.config = Config()
             self.config_error = None
+            # Wire the file-size guard to the user's config so the store and the
+            # ``_resolve_qvw`` pre-flight share one limit (MCP_QVW_MAX_FILE_BYTES)
+            # instead of the store silently keeping a hardcoded 2 GiB cap.
+            self.store = MetadataStore(max_file_size_bytes=self.config.max_file_bytes)
+            log.setLevel(getattr(logging, self.config.log_level.upper(), logging.INFO))
         except ValidationError as exc:
             self.config = None
             self.config_error = ErrorEnvelope(
@@ -95,7 +101,9 @@ class _ServerState:
 # --- Helpers ----------------------------------------------------------------
 
 
-def _resolve_qvw(state: _ServerState, qvw: str) -> Path | ErrorEnvelope:
+def _resolve_qvw(
+    state: _ServerState, qvw: str, *, check_size: bool = True
+) -> Path | ErrorEnvelope:
     """Resolve a ``qvw`` argument to an absolute path or :class:`ErrorEnvelope`.
 
     Accepts a basename (``LTV_analisys``), basename with extension
@@ -144,9 +152,10 @@ def _resolve_qvw(state: _ServerState, qvw: str) -> Path | ErrorEnvelope:
                     "that this exposes arbitrary host files to the MCP client."
                 ),
             )
-        size_check = _check_size(real, state.config.max_file_bytes)
-        if size_check is not None:
-            return size_check
+        if check_size:
+            size_check = _check_size(real, state.config.max_file_bytes)
+            if size_check is not None:
+                return size_check
         return real
 
     return ErrorEnvelope(
@@ -232,7 +241,11 @@ async def _tool_list_tables(
 
     out: list[TableSummary] = []
     for fi in targets:
-        meta_or_err = await _ensure_parsed_async(state, Path(fi.path))
+        # Size pre-flight before parse — the index-derived path skips
+        # ``_resolve_qvw``, so without this an oversized file (or a full
+        # all-files scan of huge QVWs) would parse unchecked.
+        size_err = _check_size(Path(fi.path), state.config.max_file_bytes)
+        meta_or_err = size_err or await _ensure_parsed_async(state, Path(fi.path))
         if isinstance(meta_or_err, ErrorEnvelope):
             out.append(
                 TableSummary(
@@ -294,7 +307,7 @@ def _parse_error(path: Path, exc: BaseException) -> ErrorEnvelope:
             error_code="qvw_too_large",
             category="data",
             message=str(exc),
-            hint="raise MCP_QVW_CACHE_MEM_MB or split the QVW",
+            hint="raise MCP_QVW_MAX_FILE_BYTES or split the QVW",
         )
     if isinstance(exc, ZlibBombError):
         return ErrorEnvelope(
@@ -354,19 +367,40 @@ async def _tool_get_script(state: _ServerState, qvw: str) -> ScriptBundle | Erro
 async def _tool_get_variables(
     state: _ServerState, qvw: str
 ) -> VariablesBundle | ErrorEnvelope:
-    """Phase 1 stub — variables block decoder lives in Phase 1.5 polish."""
+    """Not implemented yet — the variable-block decoder lands in Phase 1.5.
+
+    Returns a structured ``unsupported`` error rather than an empty mapping: a
+    silent ``{}`` would let the caller wrongly conclude the QVW has no
+    variables. The path is still resolved first so a bad ``qvw`` argument
+    reports the more specific resolution error.
+    """
     path = _resolve_qvw(state, qvw)
     if isinstance(path, ErrorEnvelope):
         return path
-    return VariablesBundle(qvw=path.stem, variables={})
+    return ErrorEnvelope(
+        error_code="unsupported",
+        category="unsupported",
+        message="get_variables is not implemented yet.",
+        hint="The variable decoder ships in Phase 1.5; track it in LIMITATIONS.md.",
+    )
 
 
 async def _tool_get_sheets(state: _ServerState, qvw: str) -> list[Sheet] | ErrorEnvelope:
-    """Phase 1 stub — sheet block decoder is post-Phase-2 work."""
+    """Not implemented yet — the sheet decoder is post-Phase-2 work.
+
+    Returns ``unsupported`` rather than ``[]`` for the same reason as
+    :func:`_tool_get_variables`: an empty list reads as "no sheets" instead of
+    "not decoded yet".
+    """
     path = _resolve_qvw(state, qvw)
     if isinstance(path, ErrorEnvelope):
         return path
-    return []
+    return ErrorEnvelope(
+        error_code="unsupported",
+        category="unsupported",
+        message="get_sheets is not implemented yet.",
+        hint="The sheet decoder ships after Phase 2; track it in LIMITATIONS.md.",
+    )
 
 
 async def _tool_get_data_sources(
@@ -385,8 +419,10 @@ async def _tool_reload(state: _ServerState, qvw: str | None) -> ReloadResult:
     if qvw is None:
         invalidated = state.store.invalidate(None)
     else:
-        path = _resolve_qvw(state, qvw)
-        # ``reload`` of a non-existent file is a no-op rather than an error.
+        # Skip the size pre-flight: a file that grew past the limit while
+        # cached must still be invalidatable. ``reload`` of a non-existent
+        # file remains a no-op rather than an error.
+        path = _resolve_qvw(state, qvw, check_size=False)
         invalidated = (
             [] if isinstance(path, ErrorEnvelope) else state.store.invalidate(path)
         )
@@ -398,9 +434,10 @@ _SPEC_SEARCH_SCOPES: frozenset[str] = frozenset(
 )
 """All four scopes recognised by spec §4.1 ``search``."""
 
-_PHASE1_SEARCH_SCOPES: frozenset[str] = frozenset({"scripts", "variables"})
-"""Scopes that actually return hits in Phase 1; the other two return ``[]``
-because they need data parsing (Phase 2)."""
+_PHASE1_SEARCH_SCOPES: frozenset[str] = frozenset({"scripts"})
+"""Scopes that actually return hits in Phase 1. ``fields`` and ``tables`` need
+the Phase 2 data decoder; ``variables`` needs the Phase 1.5 XML/variable-block
+decoder. All three are reported via ``SearchResult.not_implemented_scopes``."""
 
 
 async def _tool_search(
@@ -411,15 +448,17 @@ async def _tool_search(
 ) -> SearchResult | ErrorEnvelope:
     """Search across QVW metadata.
 
-    Phase 1 honours ``scripts`` and ``variables`` scopes only; ``fields``
-    and ``tables`` return zero hits and are reported as not-yet-implemented
-    in the response. Per spec §4.1, default scope is all four.
+    Phase 1 honours the ``scripts`` scope only; ``fields``, ``tables`` and
+    ``variables`` return zero hits and are listed in
+    ``SearchResult.not_implemented_scopes``. Per spec §4.1, default scope is
+    all four.
     """
     assert state.config is not None
     started = time.monotonic()
 
     requested = set(scope) if scope else set(_SPEC_SEARCH_SCOPES)
     active = requested & _PHASE1_SEARCH_SCOPES
+    not_implemented = sorted(requested - _PHASE1_SEARCH_SCOPES)
 
     pattern_or_err = _compile_pattern(pattern)
     if isinstance(pattern_or_err, ErrorEnvelope):
@@ -434,7 +473,8 @@ async def _tool_search(
     skipped: list[SkippedQvw] = []
 
     for fi in targets:
-        meta_or_err = await _ensure_parsed_async(state, Path(fi.path))
+        size_err = _check_size(Path(fi.path), state.config.max_file_bytes)
+        meta_or_err = size_err or await _ensure_parsed_async(state, Path(fi.path))
         if isinstance(meta_or_err, ErrorEnvelope):
             skipped.append(
                 SkippedQvw(
@@ -447,24 +487,45 @@ async def _tool_search(
         meta = meta_or_err
         scanned.append(fi.basename)
         if "scripts" in active:
-            for line_no, line in enumerate(meta.script.splitlines(), start=1):
-                if matcher(line):
-                    matches.append(
-                        SearchHit(
-                            qvw=fi.basename,
-                            schema=fi.schema_name,
-                            scope="script",
-                            script_line=line_no,
-                            excerpt=line.strip()[:200],
-                        )
-                    )
+            # Run the (potentially catastrophic-backtracking) matcher off the
+            # event loop so one pathological regex can't freeze every other
+            # concurrent MCP request.
+            hits = await asyncio.to_thread(
+                _match_script_lines, meta.script, matcher, fi.basename, fi.schema_name
+            )
+            matches.extend(hits)
 
     return SearchResult(
         matches=matches,
         scanned_qvws=scanned,
         skipped_qvws=skipped,
         elapsed_ms=int((time.monotonic() - started) * 1000),
+        not_implemented_scopes=not_implemented,
     )
+
+
+def _match_script_lines(
+    script: str, matcher: Callable[[str], bool], basename: str, schema: str
+) -> list[SearchHit]:
+    """Return one :class:`SearchHit` per script line matching ``matcher``.
+
+    Lines are split on ``\\n`` only (matching ``ScriptBundle.line_count``'s
+    ``count("\\n") + 1``) so reported ``script_line`` numbers line up with a
+    user's editor rather than diverging on ``\\r``/``\\v``/U+2028.
+    """
+    out: list[SearchHit] = []
+    for line_no, line in enumerate(script.split("\n"), start=1):
+        if matcher(line):
+            out.append(
+                SearchHit(
+                    qvw=basename,
+                    schema=schema,
+                    scope="script",
+                    script_line=line_no,
+                    excerpt=line.strip()[:200],
+                )
+            )
+    return out
 
 
 _MAX_PATTERN_LENGTH: int = 1024
@@ -475,9 +536,11 @@ def _compile_pattern(pattern: str) -> Callable[[str], bool] | ErrorEnvelope:
     """Compile a user-supplied search pattern.
 
     Supports ``/pattern/`` and ``/pattern/flags`` regex syntax; ``flags``
-    accepts any subset of ``i``, ``m``, ``s``. Substring fallback is
-    case-insensitive. Patterns longer than :data:`_MAX_PATTERN_LENGTH`
-    are rejected to constrain catastrophic backtracking on huge scripts.
+    accepts any subset of ``i`` (ignorecase), ``m`` (multiline), ``s``
+    (dotall), and ``x`` (verbose). Substring fallback is case-insensitive.
+    Patterns longer than :data:`_MAX_PATTERN_LENGTH` are rejected to limit
+    catastrophic backtracking on huge scripts (the match itself also runs off
+    the event loop — see :func:`_tool_search`).
     """
     if len(pattern) > _MAX_PATTERN_LENGTH:
         return ErrorEnvelope(
@@ -537,7 +600,7 @@ _TOOL_DEFS: list[types.Tool] = [
     ),
     types.Tool(
         name="get_variables",
-        description="Return user-defined Qlik variables. Phase 1 returns an empty mapping.",
+        description="Return user-defined Qlik variables. Not implemented yet (returns an 'unsupported' error); ships in Phase 1.5.",
         inputSchema={
             "type": "object",
             "properties": {"qvw": {"type": "string"}},
@@ -547,7 +610,7 @@ _TOOL_DEFS: list[types.Tool] = [
     ),
     types.Tool(
         name="get_sheets",
-        description="Return Qlik sheet definitions. Phase 1 returns an empty list.",
+        description="Return Qlik sheet definitions. Not implemented yet (returns an 'unsupported' error); ships after Phase 2.",
         inputSchema={
             "type": "object",
             "properties": {"qvw": {"type": "string"}},
@@ -650,6 +713,19 @@ def _build_server(state: _ServerState) -> Server[Any, Any]:
                     message=f"Missing required argument: {exc}",
                 )
             )
+        except OSError as exc:
+            # Filesystem race: a file/dir enumerated a moment ago was moved,
+            # deleted, or had its permissions changed mid-request. Surface a
+            # structured envelope instead of leaking a protocol-level error
+            # (server.py module docstring contract).
+            return _error_response(
+                ErrorEnvelope(
+                    error_code="qvw_dir_unreadable",
+                    category="config",
+                    message=f"Filesystem error while handling '{name}': {exc}",
+                    hint="A QVW or its directory may have changed mid-request; retry.",
+                )
+            )
         if isinstance(result, ErrorEnvelope):
             return _error_response(result)
         return _model_to_text(result)
@@ -674,6 +750,11 @@ async def _async_run() -> None:
 
 
 def run() -> None:
-    """Synchronous entrypoint for the ``mcp-qlikview`` console script."""
-    logging.basicConfig(level=logging.INFO, stream=__import__("sys").stderr)
+    """Synchronous entrypoint for the ``mcp-qlikview`` console script.
+
+    Logs go to stderr so they never corrupt the stdio MCP protocol on stdout.
+    The root level stays INFO here; the ``mcp_qlikview`` logger is adjusted to
+    ``MCP_QVW_LOG_LEVEL`` once config loads in :meth:`_ServerState.boot`.
+    """
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     asyncio.run(_async_run())
