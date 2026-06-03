@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/) and the project follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.0.
 
+## [Unreleased] — Phase 2a: field value inventory
+
+### Added
+- **`get_field_values` tool** — returns per-field distinct-value summaries
+  (cardinality, value type, sample values) decoded from the QVW symbol tables,
+  plus the field-name and table-name lists. No row-level data required. On the
+  141-field-class LTV reference this is ~12 KB of JSON produced in ~40 ms via
+  partial decode. Field↔value-set binding is left to the caller (samples), since
+  it is not 1:1 (paired numeric/text views).
+- `parser/blocks/values.py::extract_value_sets` + `symbols.symbol_count` and a
+  `limit=` sampling param on `decode_symbol_block`.
+
+### Fixed
+- **Symbol-table chunk framing** — `iter_logical_blocks` now absorbs the trailing
+  partial block that completes a field's symbol table (a run of 256 KB
+  `data_chunk`s + remainder). All 8 symbol tables in the LTV reference now decode
+  to their exact declared count.
+- **Strings > 255 bytes** — a length byte of `0xFF` escapes to a following LE
+  u32 length (in both `symbols.py` and `strings.py`). Fixes the last failing
+  symbol table (256-byte route descriptions).
+
 ## [0.1.1] — 2026-06-03 — adversarial-review fixes (round 2)
 
 A second BMAD-style adversarial review of the v0.1.0 code found 18 issues; all addressed here.

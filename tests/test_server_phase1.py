@@ -14,10 +14,16 @@ from pathlib import Path
 
 import pytest
 
-from mcp_qlikview.models import ErrorEnvelope, SearchResult, TableSummary
+from mcp_qlikview.models import (
+    ErrorEnvelope,
+    FieldValuesBundle,
+    SearchResult,
+    TableSummary,
+)
 from mcp_qlikview.parser.container import EXEX_TRAILER, HEADER_SIZE, QVW_MAGIC_PREFIX
 from mcp_qlikview.server import (
     _ServerState,
+    _tool_get_field_values,
     _tool_get_sheets,
     _tool_get_variables,
     _tool_list_tables,
@@ -122,3 +128,37 @@ async def test_reload_caches_then_invalidates(state: _ServerState) -> None:
     await _tool_search(state, "LOAD", ["scripts"], "sample")  # prime cache
     result = await _tool_reload(state, "sample")
     assert len(result.invalidated) == 1
+
+
+async def test_get_field_values_returns_value_sets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Build a QVW whose 4th block is a symbol table (a field's distinct values).
+    qvw_dir = tmp_path / "qvw"
+    qvw_dir.mkdir()
+    script_block = b"\x00" * 8 + b"///$tab Main\nLOAD * FROM x;\n"
+    val_entries = b"\x04\x03foo" + b"\x04\x03bar"
+    symtab = b"\x00\x00\x00\x00" + struct.pack("<I", 2) + val_entries
+    header = QVW_MAGIC_PREFIX + b"\x00" * (HEADER_SIZE - len(QVW_MAGIC_PREFIX))
+    body = (
+        zlib.compress(script_block)
+        + zlib.compress(_string_list(["FieldA"]))
+        + zlib.compress(_string_list(["TableOne"]))
+        + zlib.compress(symtab)
+    )
+    (qvw_dir / "vals.qvw").write_bytes(header + body + EXEX_TRAILER)
+    monkeypatch.setenv("QVW_DIR", str(qvw_dir))
+    st = _ServerState()
+    st.boot()
+    assert st.config is not None
+
+    result = await _tool_get_field_values(st, "vals")
+    assert isinstance(result, FieldValuesBundle)
+    assert result.field_names == ["FieldA"]
+    assert result.table_names == ["TableOne"]
+    assert len(result.value_sets) == 1
+    vs = result.value_sets[0]
+    assert vs.cardinality == 2
+    assert vs.value_type == "text"
+    assert vs.samples == ["foo", "bar"]
+    assert result.note  # binding caveat present

@@ -1,8 +1,9 @@
-"""MCP server: stdio transport + 8 metadata tools (Phase 1).
+"""MCP server: stdio transport + metadata tools + Phase 2a value inventory.
 
-Tools shipped here cover the metadata side of spec §4.1. The data-extraction
-tools (``query``, ``describe_table``, ``export_table``) and field/table-scope
-``search`` arrive in Phase 2 once the symbol/data decoders land.
+Tools cover the metadata side of spec §4.1 plus ``get_field_values`` (Phase 2a:
+per-field distinct values / cardinality / samples, decoded from symbol tables).
+Row-level data tools (``query``, ``describe_table``, ``export_table``) and the
+field/table-scope ``search`` arrive in Phase 2b once the row-index decoder lands.
 
 Errors are surfaced as :class:`ErrorEnvelope` JSON in the tool response with
 ``isError=True`` so Claude Code displays the structured hint rather than a
@@ -34,6 +35,7 @@ from mcp_qlikview.index import build_file_index, sanitize_schema_name
 from mcp_qlikview.models import (
     DataSource,
     ErrorEnvelope,
+    FieldValuesBundle,
     FileIndex,
     ReloadResult,
     ScriptBundle,
@@ -42,6 +44,7 @@ from mcp_qlikview.models import (
     Sheet,
     SkippedQvw,
     TableSummary,
+    ValueSetSummary,
     VariablesBundle,
 )
 from mcp_qlikview.parser.container import InvalidQvwError, ZlibBombError
@@ -415,6 +418,45 @@ async def _tool_get_data_sources(
     return extract_sources(meta.script)
 
 
+_VALUE_BINDING_NOTE = (
+    "value_sets are distinct-value summaries per field symbol table; they are "
+    "not 1:1 bound to field_names (a field may have a paired numeric+text view). "
+    "Use the samples to correlate a value_set to a field name. Row-level data "
+    "(query/describe_table/export_table) arrives in a later release."
+)
+
+
+async def _tool_get_field_values(
+    state: _ServerState, qvw: str
+) -> FieldValuesBundle | ErrorEnvelope:
+    """Return the QVW's distinct-value inventory (cardinality + type + samples).
+
+    Phase 2a: decoded from the per-field symbol tables, no row index required.
+    """
+    path = _resolve_qvw(state, qvw)
+    if isinstance(path, ErrorEnvelope):
+        return path
+    meta = await _ensure_parsed_async(state, path)
+    if isinstance(meta, ErrorEnvelope):
+        return meta
+    return FieldValuesBundle(
+        qvw=path.stem,
+        field_names=meta.field_names,
+        table_names=meta.table_names,
+        value_sets=[
+            ValueSetSummary(
+                first_block=v.first_block,
+                last_block=v.last_block,
+                cardinality=v.cardinality,
+                value_type=v.value_type,
+                samples=v.samples,
+            )
+            for v in meta.value_sets
+        ],
+        note=_VALUE_BINDING_NOTE,
+    )
+
+
 async def _tool_reload(state: _ServerState, qvw: str | None) -> ReloadResult:
     if qvw is None:
         invalidated = state.store.invalidate(None)
@@ -629,6 +671,20 @@ _TOOL_DEFS: list[types.Tool] = [
         },
     ),
     types.Tool(
+        name="get_field_values",
+        description=(
+            "Return distinct-value summaries (cardinality, type, sample values) "
+            "for each field's symbol table. No row-level data — use samples to "
+            "correlate value sets to field names."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {"qvw": {"type": "string"}},
+            "required": ["qvw"],
+            "additionalProperties": False,
+        },
+    ),
+    types.Tool(
         name="reload",
         description="Invalidate cached metadata so the next call re-parses the QVW.",
         inputSchema={
@@ -691,6 +747,8 @@ def _build_server(state: _ServerState) -> Server[Any, Any]:
                 result = await _tool_get_sheets(state, args["qvw"])
             elif name == "get_data_sources":
                 result = await _tool_get_data_sources(state, args["qvw"])
+            elif name == "get_field_values":
+                result = await _tool_get_field_values(state, args["qvw"])
             elif name == "reload":
                 result = await _tool_reload(state, args.get("qvw"))
             elif name == "search":

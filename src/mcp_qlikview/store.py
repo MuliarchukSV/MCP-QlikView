@@ -22,6 +22,7 @@ from pathlib import Path
 from mcp_qlikview.parser.blocks.dictionary import extract_field_names
 from mcp_qlikview.parser.blocks.script import extract_script
 from mcp_qlikview.parser.blocks.tables import extract_table_names
+from mcp_qlikview.parser.blocks.values import ValueSet, extract_value_sets
 from mcp_qlikview.parser.container import QvwContainer, parse_bytes
 from mcp_qlikview.parser.prj import try_prj
 
@@ -76,6 +77,10 @@ class ParsedMetadata:
 
     block_count: int
     """Total zlib blocks decoded from the container — for diagnostics."""
+
+    value_sets: list[ValueSet]
+    """Per-field distinct-value summaries (cardinality, type, samples).
+    Cheap partial decode — see :func:`extract_value_sets`."""
 
 
 _DEFAULT_MAX_ENTRIES: int = 16
@@ -179,6 +184,7 @@ class MetadataStore:
             field_names=field_names,
             table_names=table_names,
             block_count=len(container.blocks),
+            value_sets=extract_value_sets(container),
         )
         with self._lock:
             self._admit(key, meta)

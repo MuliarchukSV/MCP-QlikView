@@ -158,6 +158,7 @@ def test_metadata_store_lru_evicts_oldest_when_full(tmp_path: Path) -> None:
         field_names=[],
         table_names=[],
         block_count=0,
+        value_sets=[],
     )
     paths = []
     for name in ("a.qvw", "b.qvw", "c.qvw"):
@@ -182,6 +183,7 @@ def test_metadata_store_invalidate_all_returns_keys(tmp_path: Path) -> None:
         field_names=[],
         table_names=[],
         block_count=0,
+        value_sets=[],
     )
     for name in ("a.qvw", "b.qvw"):
         path = tmp_path / name

@@ -109,6 +109,34 @@ class DataSource(_StrictModel):
     line_in_script: int = 0
 
 
+# ---- Field values (Phase 2a) -----------------------------------------------
+
+
+class ValueSetSummary(_StrictModel):
+    """One field's distinct-value summary (no row index needed)."""
+
+    first_block: int
+    last_block: int
+    cardinality: int
+    value_type: Literal["int", "float", "text", "dual_int", "dual_float", "mixed"]
+    samples: list[str] = []
+
+
+class FieldValuesBundle(_StrictModel):
+    """QVW-level value inventory: field/table names + per-field value sets.
+
+    ``value_sets`` are not 1:1 bound to ``field_names`` (a field may store a
+    paired numeric+text view), so binding is left to the caller via the
+    ``samples``. ``note`` carries that caveat for the model consumer.
+    """
+
+    qvw: str
+    field_names: list[str]
+    table_names: list[str]
+    value_sets: list[ValueSetSummary]
+    note: str
+
+
 # ---- Search ----------------------------------------------------------------
 
 
