@@ -130,7 +130,36 @@ blocks **355-363** (8 × 1,978,368 B + 240,626 B) and **364-368**
 `RecordByteSize` falls out once the per-table field set + derived bit widths
 are summed (`RecordByteSize = ceil(Σ BitWidth / 8)`).
 
-## Status: Phase 2 fully mapped end-to-end
+## Addendum 3 — verification CORRECTION (block 372 re-read)
+
+Cross-checking block 372 against the matching field's symbol table (group
+100-103, 12,186 GUID strings of 67 bytes each) **falsified** the Addendum-1/2
+reading that column A is a byte offset into the symbol table:
+
+- column A direct-hits real symbol offsets only **22/2000 (~1 %, noise)**, and
+  across all records column A is **not monotonic** and **wraps at 65536**
+  (it's a u16 that overflows) — so it is NOT a cumulative byte offset.
+- the column at byte offset 9 (`colH`, u16) holds **12,184 distinct values
+  spanning [1, 12185]** — i.e. a **permutation of the field's symbol indices**.
+
+So block 372 is a **record ↔ symbol-index map** (a sort/inverted index for the
+field, or the explicit row-index of a ~12,184-row key table), **not** a
+symbol-offset table. The byte-offset interpretation in the earlier addenda is
+**withdrawn**. The other columns (A wrapping-u16, B linear ×4, C4 ordinal,
+C8 flag 1/2) remain undeciphered.
+
+**Honest status:** a clean end-to-end decode of one real record was **not**
+achieved this session. The verification disproved a hypothesis (good) and
+narrowed block 372's role, but the path from the big packed row-index blocks
+(355-368) → field values is **not yet proven**. Full per-row reconstruction
+(Phase 2b) needs dedicated reverse-engineering and should not be treated as
+"nearly done".
+
+What IS solid and proven:
+- symbol-table framing + decode (7/8 fields exact) — distinct values per field.
+- block 375 = 64 field-ids; block 373/374 = directory (partial).
+
+## Status: Phase 2 fully mapped end-to-end (SUPERSEDED — see Addendum 3)
 
 Every structural piece is now identified:
 `field/table directory (373-375)` + `per-field symbol tables` +
