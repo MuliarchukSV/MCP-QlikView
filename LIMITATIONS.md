@@ -12,7 +12,7 @@ The following spec §4.1 tools are **not implemented** in v0.1.0:
 
 `list_tables` works but reports `field_count=0` and `parse_status="pending"` for every table because the per-table schema decoder lives in Phase 2.
 
-`search` accepts the `fields` and `tables` scopes per spec §4.1 but returns zero hits in those scopes — they're documented as Phase 2 work.
+`search` honours the `scripts` (load-script lines), `fields` (field names) and `tables` (table names) scopes. The `variables` scope is not yet implemented and is reported in `SearchResult.not_implemented_scopes`. Searching field *values* (not names) is covered by `get_field_values`; full-text value search arrives with Phase 2b.
 
 The foundational `parser/blocks/symbols.py` shipped in v0.1.0 (decodes the `0x01..0x06` dual-value entries on top of which Phase 2 builds), but the table-level data layer (bit-stuffed index decode + DuckDB ingest) is the next ~3-6 dev-days of work. Estimate is risky because the QVW container is custom and PyQvd applies only to the inner symbol decoder, not the table framing — see the [framing probe](docs/probes/2026-05-07-qvw-framing.md) for the format details.
 

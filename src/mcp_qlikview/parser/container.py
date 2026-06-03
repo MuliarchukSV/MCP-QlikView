@@ -327,12 +327,30 @@ def _try_decompress(body: bytes, offset: int, end: int) -> tuple[int, bytes]:
 def iter_logical_blocks(container: QvwContainer) -> list[LogicalBlock]:
     """Group ``container.blocks`` into logical payloads (probe-driven).
 
-    Consecutive ``data_chunk`` blocks are merged into one
-    :class:`LogicalBlock` of kind ``"symbol_group"``; every other block
-    becomes its own ``"single"`` :class:`LogicalBlock`. The 4-byte
-    inter-chunk gaps recorded in :class:`RawBlock.gap_after` are NOT
-    included in the merged payload — they are container framing, not part
-    of the user-visible structure.
+    A field's symbol table larger than 256 KB is stored as a run of full
+    256 KB ``data_chunk`` blocks (each with a 4-byte inter-chunk gap)
+    **followed by one trailing block** that holds the remainder. That
+    trailing block is < 256 KB and carries the wider ~169-byte gap, so the
+    container classifies it ``metadata``/``unknown`` rather than
+    ``data_chunk``. It is nonetheless part of the same symbol table —
+    confirmed on the LTV reference, where the run blocks 8-48 + block 49
+    decode to exactly the declared 478,993 entries (and 160-324 + 325 to
+    408,260). Dropping it truncates the table just short of its count.
+
+    Grouping rule, therefore:
+
+    - A maximal run of ``data_chunk`` blocks **plus the single block that
+      immediately follows it** merge into one ``"symbol_group"``. The
+      4-byte inter-chunk gaps are container framing and stay excluded from
+      the payload; the trailing block's own gap is likewise irrelevant.
+    - A run that ends at EOF with no following block forms a
+      ``"symbol_group"`` of just its chunks (table ended on a 256 KB
+      boundary — not observed yet, handled defensively).
+    - Every other block becomes its own ``"single"`` :class:`LogicalBlock`.
+
+    The symbol-table reader (Phase 2) still treats the ``[u32 count]``
+    header as the authority and validates the decoded entry count against
+    it; this grouping only assembles the candidate buffer.
 
     The result is a flat list rather than an iterator so callers can index
     into it (e.g. block 0 = script, block 1 = field-name dict).
@@ -340,14 +358,15 @@ def iter_logical_blocks(container: QvwContainer) -> list[LogicalBlock]:
     out: list[LogicalBlock] = []
     pending: list[RawBlock] = []
 
-    def _flush() -> None:
+    def _flush(tail: RawBlock | None = None) -> None:
         if not pending:
             return
+        members = pending + ([tail] if tail is not None else [])
         out.append(
             LogicalBlock(
-                first_index=pending[0].index,
-                last_index=pending[-1].index,
-                payload=b"".join(b.decompressed for b in pending),
+                first_index=members[0].index,
+                last_index=members[-1].index,
+                payload=b"".join(b.decompressed for b in members),
                 kind="symbol_group",
             )
         )
@@ -357,7 +376,11 @@ def iter_logical_blocks(container: QvwContainer) -> list[LogicalBlock]:
         if block.kind_hint == "data_chunk":
             pending.append(block)
             continue
-        _flush()
+        if pending:
+            # This block is the remainder that completes the preceding
+            # data_chunk run's symbol table — absorb it, then it's consumed.
+            _flush(tail=block)
+            continue
         out.append(
             LogicalBlock(
                 first_index=block.index,

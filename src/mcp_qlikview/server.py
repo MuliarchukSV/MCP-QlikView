@@ -1,8 +1,9 @@
-"""MCP server: stdio transport + 8 metadata tools (Phase 1).
+"""MCP server: stdio transport + metadata tools + Phase 2a value inventory.
 
-Tools shipped here cover the metadata side of spec §4.1. The data-extraction
-tools (``query``, ``describe_table``, ``export_table``) and field/table-scope
-``search`` arrive in Phase 2 once the symbol/data decoders land.
+Tools cover the metadata side of spec §4.1 plus ``get_field_values`` (Phase 2a:
+per-field distinct values / cardinality / samples, decoded from symbol tables).
+Row-level data tools (``query``, ``describe_table``, ``export_table``) and the
+field/table-scope ``search`` arrive in Phase 2b once the row-index decoder lands.
 
 Errors are surfaced as :class:`ErrorEnvelope` JSON in the tool response with
 ``isError=True`` so Claude Code displays the structured hint rather than a
@@ -34,6 +35,7 @@ from mcp_qlikview.index import build_file_index, sanitize_schema_name
 from mcp_qlikview.models import (
     DataSource,
     ErrorEnvelope,
+    FieldValuesBundle,
     FileIndex,
     ReloadResult,
     ScriptBundle,
@@ -42,6 +44,7 @@ from mcp_qlikview.models import (
     Sheet,
     SkippedQvw,
     TableSummary,
+    ValueSetSummary,
     VariablesBundle,
 )
 from mcp_qlikview.parser.container import InvalidQvwError, ZlibBombError
@@ -258,18 +261,20 @@ async def _tool_list_tables(
                 )
             )
             continue
+        tfm = meta_or_err.table_field_map
         for table_name in meta_or_err.table_names:
+            # The table→field directory (block 374) gives the per-table field
+            # count. When it can't be decoded, fall back to 0/"pending".
+            fields = tfm.get(table_name) if tfm else None
             out.append(
                 TableSummary(
                     qvw=fi.basename,
                     schema=fi.schema_name,
                     table_name=table_name,
-                    # Phase 1 cannot decode per-table field lists yet; the
-                    # global dictionary size would over-report. ``0`` with
-                    # ``parse_status="pending"`` signals "value not yet
-                    # known" per spec §4.3 conventions.
-                    field_count=0,
-                    parse_status="pending",
+                    field_count=len(fields) if fields is not None else 0,
+                    # row_count still needs the Phase 2b row index; "ok" here
+                    # means the field list is known, not the row count.
+                    parse_status="ok" if fields is not None else "pending",
                 )
             )
     return out
@@ -415,6 +420,45 @@ async def _tool_get_data_sources(
     return extract_sources(meta.script)
 
 
+_VALUE_BINDING_NOTE = (
+    "value_sets are distinct-value summaries per field symbol table; they are "
+    "not 1:1 bound to field_names (a field may have a paired numeric+text view). "
+    "Use the samples to correlate a value_set to a field name. Row-level data "
+    "(query/describe_table/export_table) arrives in a later release."
+)
+
+
+async def _tool_get_field_values(
+    state: _ServerState, qvw: str
+) -> FieldValuesBundle | ErrorEnvelope:
+    """Return the QVW's distinct-value inventory (cardinality + type + samples).
+
+    Phase 2a: decoded from the per-field symbol tables, no row index required.
+    """
+    path = _resolve_qvw(state, qvw)
+    if isinstance(path, ErrorEnvelope):
+        return path
+    meta = await _ensure_parsed_async(state, path)
+    if isinstance(meta, ErrorEnvelope):
+        return meta
+    return FieldValuesBundle(
+        qvw=path.stem,
+        field_names=meta.field_names,
+        table_names=meta.table_names,
+        value_sets=[
+            ValueSetSummary(
+                first_block=v.first_block,
+                last_block=v.last_block,
+                cardinality=v.cardinality,
+                value_type=v.value_type,
+                samples=v.samples,
+            )
+            for v in meta.value_sets
+        ],
+        note=_VALUE_BINDING_NOTE,
+    )
+
+
 async def _tool_reload(state: _ServerState, qvw: str | None) -> ReloadResult:
     if qvw is None:
         invalidated = state.store.invalidate(None)
@@ -434,10 +478,10 @@ _SPEC_SEARCH_SCOPES: frozenset[str] = frozenset(
 )
 """All four scopes recognised by spec §4.1 ``search``."""
 
-_PHASE1_SEARCH_SCOPES: frozenset[str] = frozenset({"scripts"})
-"""Scopes that actually return hits in Phase 1. ``fields`` and ``tables`` need
-the Phase 2 data decoder; ``variables`` needs the Phase 1.5 XML/variable-block
-decoder. All three are reported via ``SearchResult.not_implemented_scopes``."""
+_ACTIVE_SEARCH_SCOPES: frozenset[str] = frozenset({"scripts", "fields", "tables"})
+"""Scopes that return hits today: ``scripts`` (load-script lines), ``fields``
+(field names), ``tables`` (table names). ``variables`` needs the Phase 1.5
+variable-block decoder and is reported via ``not_implemented_scopes``."""
 
 
 async def _tool_search(
@@ -448,17 +492,17 @@ async def _tool_search(
 ) -> SearchResult | ErrorEnvelope:
     """Search across QVW metadata.
 
-    Phase 1 honours the ``scripts`` scope only; ``fields``, ``tables`` and
-    ``variables`` return zero hits and are listed in
-    ``SearchResult.not_implemented_scopes``. Per spec §4.1, default scope is
-    all four.
+    Honours ``scripts`` (load-script lines), ``fields`` (field names) and
+    ``tables`` (table names). ``variables`` is not yet implemented and is
+    listed in ``SearchResult.not_implemented_scopes``. Per spec §4.1, default
+    scope is all four.
     """
     assert state.config is not None
     started = time.monotonic()
 
     requested = set(scope) if scope else set(_SPEC_SEARCH_SCOPES)
-    active = requested & _PHASE1_SEARCH_SCOPES
-    not_implemented = sorted(requested - _PHASE1_SEARCH_SCOPES)
+    active = requested & _ACTIVE_SEARCH_SCOPES
+    not_implemented = sorted(requested - _ACTIVE_SEARCH_SCOPES)
 
     pattern_or_err = _compile_pattern(pattern)
     if isinstance(pattern_or_err, ErrorEnvelope):
@@ -494,6 +538,30 @@ async def _tool_search(
                 _match_script_lines, meta.script, matcher, fi.basename, fi.schema_name
             )
             matches.extend(hits)
+        if "fields" in active:
+            for name in meta.field_names:
+                if matcher(name):
+                    matches.append(
+                        SearchHit(
+                            qvw=fi.basename,
+                            schema=fi.schema_name,
+                            scope="field",
+                            field_name=name,
+                            excerpt=name[:200],
+                        )
+                    )
+        if "tables" in active:
+            for name in meta.table_names:
+                if matcher(name):
+                    matches.append(
+                        SearchHit(
+                            qvw=fi.basename,
+                            schema=fi.schema_name,
+                            scope="table",
+                            table_name=name,
+                            excerpt=name[:200],
+                        )
+                    )
 
     return SearchResult(
         matches=matches,
@@ -629,6 +697,20 @@ _TOOL_DEFS: list[types.Tool] = [
         },
     ),
     types.Tool(
+        name="get_field_values",
+        description=(
+            "Return distinct-value summaries (cardinality, type, sample values) "
+            "for each field's symbol table. No row-level data — use samples to "
+            "correlate value sets to field names."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {"qvw": {"type": "string"}},
+            "required": ["qvw"],
+            "additionalProperties": False,
+        },
+    ),
+    types.Tool(
         name="reload",
         description="Invalidate cached metadata so the next call re-parses the QVW.",
         inputSchema={
@@ -640,8 +722,8 @@ _TOOL_DEFS: list[types.Tool] = [
     types.Tool(
         name="search",
         description=(
-            "Search across QVW metadata. Phase 1 covers script + variables scopes; "
-            "field/table scopes activate in Phase 2."
+            "Search across QVW metadata. Covers script lines, field names, and "
+            "table names; the variables scope is not yet implemented."
         ),
         inputSchema={
             "type": "object",
@@ -691,6 +773,8 @@ def _build_server(state: _ServerState) -> Server[Any, Any]:
                 result = await _tool_get_sheets(state, args["qvw"])
             elif name == "get_data_sources":
                 result = await _tool_get_data_sources(state, args["qvw"])
+            elif name == "get_field_values":
+                result = await _tool_get_field_values(state, args["qvw"])
             elif name == "reload":
                 result = await _tool_reload(state, args.get("qvw"))
             elif name == "search":

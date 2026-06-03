@@ -55,8 +55,28 @@ class SymbolEntry:
     numeric: int | float | None
 
 
-def decode_symbol_block(buf: bytes) -> list[SymbolEntry]:
+def symbol_count(buf: bytes) -> int:
+    """Return the declared entry count from a symbol-block header (cheap).
+
+    Reads only the ``[4 zero bytes][LE u32 count]`` header — does not decode
+    entries. Used to get a field's cardinality without materialising every
+    symbol (a single table can hold ~500k entries).
+    """
+    if len(buf) < 8:
+        raise InvalidSymbolBlockError(
+            f"buffer too short for symbol-block header: {len(buf)} bytes"
+        )
+    (count,) = struct.unpack_from("<I", buf, 4)
+    return int(count)
+
+
+def decode_symbol_block(buf: bytes, *, limit: int | None = None) -> list[SymbolEntry]:
     """Decode a QVW symbol-table block to a list of :class:`SymbolEntry`.
+
+    Args:
+        buf: decompressed symbol-table bytes.
+        limit: stop after this many entries (for cheap sampling of huge tables).
+            ``None`` decodes all declared entries.
 
     Raises:
         InvalidSymbolBlockError: any wire-format invariant is violated
@@ -73,9 +93,10 @@ def decode_symbol_block(buf: bytes) -> list[SymbolEntry]:
             f"{MAX_REASONABLE_STRING_COUNT}"
         )
 
+    n = count if limit is None else min(count, max(0, limit))
     pos = 8
     out: list[SymbolEntry] = []
-    for i in range(count):
+    for i in range(n):
         if pos >= len(buf):
             raise InvalidSymbolBlockError(
                 f"truncated stream at entry {i + 1}/{count} (offset {pos})"
@@ -131,13 +152,27 @@ def _decode_entry(flag: int, buf: bytes, pos: int) -> tuple[SymbolEntry, int]:
 
 
 def _read_length_prefixed_text(buf: bytes, pos: int) -> tuple[str, int]:
-    """Read ``<len:1> <bytes>`` UTF-8 text from ``buf`` starting at ``pos``."""
+    """Read length-prefixed UTF-8 text from ``buf`` starting at ``pos``.
+
+    The length is a single byte, except the sentinel ``0xFF`` which escapes to
+    a 4-byte little-endian u32 length that follows it — required for strings
+    longer than 255 bytes (probe 2026-06-03: LTV group 143-159 carries 256-byte
+    route descriptions encoded this way).
+    """
     if pos >= len(buf):
         raise InvalidSymbolBlockError(
             f"truncated length byte at offset {pos}"
         )
     length = buf[pos]
-    start = pos + 1
+    if length == 0xFF:
+        if pos + 5 > len(buf):
+            raise InvalidSymbolBlockError(
+                f"truncated 0xFF-escaped u32 length at offset {pos}"
+            )
+        (length,) = struct.unpack_from("<I", buf, pos + 1)
+        start = pos + 5
+    else:
+        start = pos + 1
     end = start + length
     if end > len(buf):
         raise InvalidSymbolBlockError(

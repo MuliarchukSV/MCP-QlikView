@@ -80,11 +80,11 @@ async def test_list_tables_for_ltv_finds_six(qvw_state: _ServerState) -> None:
     assert "DataLTV" in table_names
     for t in ltv_tables:
         assert isinstance(t, TableSummary)
-        # Phase 1 cannot decode per-table field lists yet; field_count stays
-        # 0 with parse_status="pending" rather than overcounting via the
-        # global dictionary size (review fix #6).
-        assert t.field_count == 0
-        assert t.parse_status == "pending"
+        # Phase 2b: the table→field directory (block 374) now gives a real
+        # per-table field_count; parse_status="ok" means the field list is
+        # known (row_count still needs the row index).
+        assert t.field_count > 0
+        assert t.parse_status == "ok"
 
 
 @pytest.mark.golden
