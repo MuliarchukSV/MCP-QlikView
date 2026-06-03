@@ -66,11 +66,10 @@ def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _ServerState:
 
 
 async def test_search_reports_not_implemented_scopes(state: _ServerState) -> None:
-    # Review #8/#9: fields/tables/variables aren't implemented in Phase 1 and
-    # must be reported distinctly from "supported but zero matches".
+    # scripts/fields/tables are active; only variables remains unimplemented.
     result = await _tool_search(state, "LOAD", None, None)
     assert isinstance(result, SearchResult)
-    assert result.not_implemented_scopes == ["fields", "tables", "variables"]
+    assert result.not_implemented_scopes == ["variables"]
     assert "sample" in result.scanned_qvws
     assert any(h.scope == "script" for h in result.matches)
 
@@ -80,6 +79,19 @@ async def test_search_variables_scope_is_not_implemented(state: _ServerState) ->
     assert isinstance(result, SearchResult)
     assert result.not_implemented_scopes == ["variables"]
     assert result.matches == []
+
+
+async def test_search_fields_scope_matches_field_names(state: _ServerState) -> None:
+    result = await _tool_search(state, "FieldA", ["fields"], "sample")
+    assert isinstance(result, SearchResult)
+    assert result.not_implemented_scopes == []
+    assert any(h.scope == "field" and h.field_name == "FieldA" for h in result.matches)
+
+
+async def test_search_tables_scope_matches_table_names(state: _ServerState) -> None:
+    result = await _tool_search(state, "TableOne", ["tables"], "sample")
+    assert isinstance(result, SearchResult)
+    assert any(h.scope == "table" and h.table_name == "TableOne" for h in result.matches)
 
 
 async def test_search_line_numbers_use_newline_split(state: _ServerState) -> None:
